@@ -335,9 +335,7 @@ EOF
 # — pacman is just a thin CLI wrapper around it — so we need to find and
 # grep the actual libalpm shared object, not `pacman`.
 ALPM_LIB=$(ldd "$(command -v pacman)" 2>/dev/null | awk '/libalpm\.so/ {print $3; exit}')
-log "DEBUG: command -v pacman = [$(command -v pacman)]"
-log "DEBUG: ALPM_LIB = [$ALPM_LIB]"
-if [ -n "$ALPM_LIB" ] && strings "$ALPM_LIB" | grep -qi '^NetworkAccess$'; then
+if [ -n "$ALPM_LIB" ] && strings "$ALPM_LIB" | grep -qi 'networkaccess'; then
     log "Detected pacman network sandbox support (via $ALPM_LIB) — adding NetworkAccess = allowed to arch-audit.hook"
     NETWORK_ACCESS_LINE="NetworkAccess = allowed"
 else
