@@ -335,7 +335,18 @@ EOF
 # — pacman is just a thin CLI wrapper around it — so we need to find and
 # grep the actual libalpm shared object, not `pacman`.
 ALPM_LIB=$(ldd "$(command -v pacman)" 2>/dev/null | awk '/libalpm\.so/ {print $3; exit}')
-if [ -n "$ALPM_LIB" ] && strings "$ALPM_LIB" | grep -qi '^NetworkAccess$'; then
+# NOTE: capture strings' output into a variable before grepping it, rather
+# than piping `strings ... | grep -q ...` directly. `grep -q` exits the
+# instant it finds a match, which can close the pipe while `strings` is
+# still writing — killing it with SIGPIPE. With `set -o pipefail` active,
+# that SIGPIPE-driven exit (141) gets reported as the pipeline's overall
+# exit status, masking a true positive from grep. Capturing to a variable
+# first avoids the live pipe (and the race) entirely.
+ALPM_STRINGS=""
+if [ -n "$ALPM_LIB" ]; then
+    ALPM_STRINGS="$(strings "$ALPM_LIB")"
+fi
+if [ -n "$ALPM_LIB" ] && grep -qi 'networkaccess' <<< "$ALPM_STRINGS"; then
     log "Detected pacman network sandbox support (via $ALPM_LIB) — adding NetworkAccess = allowed to arch-audit.hook"
     NETWORK_ACCESS_LINE="NetworkAccess = allowed"
 else
