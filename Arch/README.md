@@ -1,26 +1,80 @@
+# Hardened Pacman Update Pipeline
+
+Idempotent pacman hooks that automatically verify every transaction
+(dependency satisfiability + broken-linkage checks) and roll back via
+BTRFS snapshots on failure — so a `pacman -Syu` that silently breaks the
+system doesn't stay broken unnoticed.
+
+**Verified working on:**
+
+- CachyOS (original build/test environment, including end-to-end via the
+  `--verify` smoke test flag)
+- Vanilla Arch Linux, fresh install, out of the box
+
+Built for Arch and Arch-based distros generally — anything running pacman
+and libalpm should be compatible, though only the two above have been
+directly tested.
+
+---
+
 # Prerequisites & Assumptions
 
-This script was built and tested on CachyOS, which ships several things by
-default that vanilla Arch (or other Arch-based distros) does not. Before
-running it on a non-CachyOS system, confirm the following:
+This pipeline relies on a few things being in place before it has a
+foundation to run on. Some distros (CachyOS included) provide these by
+default; others (vanilla Arch, most other Arch-based distros) require
+setting them up manually first:
 
-- **BTRFS + Snapper.** `snapper` and `snap-pac` aren't installed or
-  configured by default on vanilla Arch the way they are on CachyOS. You'll
-  need a BTRFS filesystem and a manual Snapper setup before pacback's
-  snapshot mechanism has anything to work with — this is the same first
-  step that was done on the original CachyOS test VM.
-- **No Limine-snapshot integration out of the box.** CachyOS wires Limine
-  into Snapper's boot-snapshot flow as a convenience; vanilla Arch doesn't.
-  This shouldn't affect the pipeline's own logic, but don't expect
-  boot-time snapshot entries to just appear the way they did on CachyOS.
-- **`base-devel` and `git` may not be preinstalled.** Some CachyOS ISOs
-  assume these are already present; vanilla Arch installs may not have
-  them. Confirm both are installed before relying on the AUR helper
-  bootstrap step.
+- **BTRFS + Snapper.** `snapper` and `snap-pac` need to be installed and
+  configured, on a BTRFS filesystem, before pacback's snapshot mechanism
+  has anything to work with. If your distro doesn't set this up by
+  default, this needs to happen before running the pipeline.
+- **Bootloader snapshot integration is optional, not required.** Some
+  distros (e.g. CachyOS with Limine) wire snapshot-boot entries into the
+  bootloader automatically as a convenience. This pipeline's own logic
+  doesn't depend on that — it works the same either way — but don't expect
+  boot-time snapshot entries to appear unless your distro/bootloader
+  combination provides that itself.
+- **`base-devel` and `git`.** Required for the AUR helper bootstrap step
+  (building `yay` and `paru` from source). Some ISOs include these by
+  default; others don't. Confirm both are installed, or let the script
+  install them itself.
 
-None of the above are blockers — they're just setup steps that CachyOS
-happens to handle for you, which need to be done manually on a vanilla Arch
-(or other Arch-based) system before this pipeline has a foundation to run on.
+None of the above are blockers — they're just prerequisites that some
+distros happen to handle for you and others don't.
+
+---
+
+# Dependencies
+
+What this pipeline directly relies on to function — not the dependencies
+_of_ these dependencies, just the tools and packages the hooks/scripts
+call directly:
+
+- **bash** — all scripts are bash, not POSIX sh
+- **sudo / root access** — required to run the setup script and to deploy
+  files under `/etc/pacman.d/`
+- **git** and **base-devel** — needed to build the AUR helpers and AUR
+  packages below from source
+- **yay** and **paru** — AUR helpers (bootstrapped by the setup script if
+  not already present)
+- **pacback** — the snapshot/restore-point manager the rollback mechanism
+  is built on
+- **snapper** and **snap-pac** — BTRFS snapshotting, triggered automatically
+  around every pacman transaction
+- **libsolv** (`installcheck`, `archrepo2solv`) — dependency satisfiability
+  checking
+- **rebuild-detector** (`checkrebuild`) — broken-linkage / stale-dependency
+  checking
+- **arch-audit** — CVE scanning against installed packages
+- **pacman-contrib** (`paccache`) — package cache pruning
+- **curl**, **openssl** — required by the `arch-audit` hook
+- **systemd** (`systemd-inhibit`, `systemctl`, `journalctl`, `logger`) —
+  used for the shutdown/sleep inhibitor lock, timers, and logging
+- **binutils** (`strings`) and **glibc** (`ldd`) — used by the setup
+  script itself to detect whether the local pacman/libalpm build supports
+  hook network sandboxing
+- **A BTRFS filesystem** — required for snapper/pacback snapshots to work
+  at all
 
 ---
 
@@ -57,12 +111,12 @@ happens to handle for you, which need to be done manually on a vanilla Arch
 These are hand-written for this pipeline (not provided by any package) and
 deployed to `/etc/pacman.d/hooks/` and `/etc/pacman.d/hooks/scripts/`:
 
-| File | When it runs | What it does |
-|---|---|---|
-| `00-systemd-inhibit-pre.hook` + `inhibit-start.sh` | `PreTransaction` | Acquires a shutdown/sleep inhibitor lock so the system can't sleep or power off mid-transaction |
-| `zy-verifytransaction-post.hook` + `verify-transaction.sh` | `PostTransaction` | The core gate: runs `installcheck` (dependency satisfiability) and `checkrebuild` (broken linkage). On failure, finds the latest pacback snapshot and triggers an automatic, detached rollback |
-| `arch-audit.hook` | `PostTransaction` | Informational-only CVE scan against installed packages; not part of the pass/fail gate |
-| `zz-systemd-inhibit-post.hook` + `inhibit-stop.sh` | `PostTransaction` | Releases the shutdown/sleep inhibitor lock acquired at the start of the transaction |
+| File                                                       | When it runs      | What it does                                                                                                                                                                                                                                      |
+| ---------------------------------------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `00-systemd-inhibit-pre.hook` + `inhibit-start.sh`         | `PreTransaction`  | Acquires a shutdown/sleep inhibitor lock so the system can't sleep or power off mid-transaction                                                                                                                                                   |
+| `zy-verifytransaction-post.hook` + `verify-transaction.sh` | `PostTransaction` | The core gate: runs `installcheck` (dependency satisfiability) and `checkrebuild` (broken linkage). On failure, finds the latest pacback snapshot and triggers an automatic, detached rollback                                                    |
+| `arch-audit.hook`                                          | `PostTransaction` | Informational-only CVE scan against installed packages; not part of the pass/fail gate. Automatically adds `NetworkAccess = allowed` if the local pacman build has hook/scriptlet network sandboxing (detected at runtime, not assumed by distro) |
+| `zz-systemd-inhibit-post.hook` + `inhibit-stop.sh`         | `PostTransaction` | Releases the shutdown/sleep inhibitor lock acquired at the start of the transaction                                                                                                                                                               |
 
 Hook filenames are prefixed to control execution order (pacman runs hooks
 alphabetically): the inhibitor lock is acquired first (`00-`) and released
@@ -85,12 +139,13 @@ state to roll back to if needed.
    for the pacman database lock to clear, then rolls the system back to
    that snapshot — automatically, without user intervention.
 
-# Why Run This on CachyOS
+---
 
-CachyOS already ships a solid baseline (BTRFS + Snapper + Limine snapshot
-integration by default), but a rolling-release system is still only as
-safe as its ability to detect and recover from a bad transaction. This
-pipeline closes that gap:
+# Why Use This
+
+A rolling-release system is only as safe as its ability to detect and
+recover from a bad transaction. This pipeline closes that gap, regardless
+of which Arch-based distro it's running on:
 
 - **Turns "hope it works" into "verify it worked."** A normal `pacman -Syu`
   succeeding doesn't guarantee the resulting system is actually coherent —
@@ -98,7 +153,7 @@ pipeline closes that gap:
   can all slip through silently. This pipeline checks for those explicitly,
   every time.
 - **Automatic recovery, not just automatic snapshots.** Snapper alone gives
-  you the ability to *manually* roll back if you notice something's wrong.
+  you the ability to _manually_ roll back if you notice something's wrong.
   This pipeline notices for you and rolls back on its own, closing the gap
   between "something broke" and "someone has to catch it."
 - **Safe by default, without slowing down every update.** The checks run
@@ -114,8 +169,9 @@ pipeline closes that gap:
   the pass/fail gate so it can't itself cause an unnecessary rollback.
 - **Reproducible, not just "it works on my machine."** The automation
   script that deploys all of this is idempotent and safe to re-run, so the
-  same hardened setup can be replicated on a fresh install (VM or bare
-  metal) rather than rebuilt by hand each time.
+  same hardened setup can be replicated on a fresh install — CachyOS,
+  vanilla Arch, or in principle any Arch-based distro with pacman/libalpm —
+  rather than rebuilt by hand each time.
 
 In short: this turns routine `pacman -Syu` updates from "trust that it went
 fine" into a self-checking, self-healing process — which matters more, not
