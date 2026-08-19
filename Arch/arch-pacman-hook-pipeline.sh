@@ -94,13 +94,20 @@ ensure_aur_pkg_installed() {
 
 # Write $content to $target only if it differs from what's already there.
 # Backs up the existing file with a timestamp suffix before overwriting.
+#
+# Comparison is done by reading both sides into shell variables via $(...),
+# which uniformly strips trailing newlines from each — so a hand-edited file
+# that's missing (or has extra) trailing blank lines isn't falsely flagged
+# as "different" when its actual content is identical.
 deploy_file() {
     local target="$1"
     local content="$2"
     local mode="${3:-644}"
 
     if [ -f "$target" ]; then
-        if diff -q <(printf '%s\n' "$content") "$target" >/dev/null 2>&1; then
+        local existing
+        existing="$(cat "$target")"
+        if [ "$existing" = "$content" ]; then
             log "Unchanged, skipping: $target"
             chmod "$mode" "$target"
             return
@@ -323,9 +330,13 @@ EOF
 # it needs the --source/--show-cve flags and, on pacman builds with hook/
 # scriptlet network sandboxing, a NetworkAccess = allowed line. That sandbox
 # feature isn't confirmed present in all pacman builds, so we probe for it
-# rather than assume it based on distro.
-if pacman --help | grep -q -- '--disable-sandbox-network'; then
-    log "Detected pacman network sandbox support — adding NetworkAccess = allowed to arch-audit.hook"
+# rather than assume it based on distro. Note: hook parsing (and the
+# NetworkAccess key) lives in libalpm, not the pacman frontend binary itself
+# — pacman is just a thin CLI wrapper around it — so we need to find and
+# grep the actual libalpm shared object, not `pacman`.
+ALPM_LIB=$(ldd "$(command -v pacman)" 2>/dev/null | awk '/libalpm\.so/ {print $3; exit}')
+if [ -n "$ALPM_LIB" ] && strings "$ALPM_LIB" | grep -qi '^NetworkAccess$'; then
+    log "Detected pacman network sandbox support (via $ALPM_LIB) — adding NetworkAccess = allowed to arch-audit.hook"
     NETWORK_ACCESS_LINE="NetworkAccess = allowed"
 else
     log "pacman network sandbox not detected — omitting NetworkAccess key from arch-audit.hook"
