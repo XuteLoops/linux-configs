@@ -335,6 +335,9 @@ if [ "$NEED_REBOOT" -eq 1 ]; then
         echo "$REASON" > "$REBOOT_FLAG"
         logger -t reboot-required "Reboot required: $REASON"
         cat >> "$REBOOT_PKGS"
+        echo ""
+        echo "*** System restart required: $REASON ***"
+        echo ""
 fi
 EOF
 )
