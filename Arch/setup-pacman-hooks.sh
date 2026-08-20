@@ -124,6 +124,26 @@ deploy_file() {
     chmod "$mode" "$target"
 }
 
+# Idempotently append a line to a file if it isn't already present
+# (exact match). Creates the file (and parent directory) if missing.
+# Unlike deploy_file, this never touches existing content — it only adds
+# a line if it's not already there — since files like /etc/bash.bashrc
+# and /etc/zsh/zshrc are shared system config, not files this pipeline owns.
+ensure_line_in_file() {
+    local file="$1"
+    local line="$2"
+
+    mkdir -p "$(dirname "$file")"
+    touch "$file"
+
+    if grep -qxF "$line" "$file" 2>/dev/null; then
+        log "Already present in $file"
+    else
+        log "Adding to $file"
+        printf '\n%s\n' "$line" >> "$file"
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # 1. AUR helper bootstrap (yay + paru)
 # ---------------------------------------------------------------------------
@@ -237,14 +257,18 @@ TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 # --- Check 1: installcheck (dependency graph satisfiability) ---
 SOLVFILE=$(mktemp /tmp/local-XXXXXX.solv)
 archrepo2solv -l /var/lib/pacman/local > "$SOLVFILE"
-if installcheck x86_64 "$SOLVFILE" 2>&1 | tee "$LOGDIR/installcheck-$TIMESTAMP.log" | grep -q .; then
+INSTALLCHECK_OUTPUT="$(installcheck x86_64 "$SOLVFILE" 2>&1)"
+echo "$INSTALLCHECK_OUTPUT" | tee "$LOGDIR/installcheck-$TIMESTAMP.log"
+if [ -n "$INSTALLCHECK_OUTPUT" ]; then
         logger -t verify-transaction "FAILED: installcheck found unsatisfied dependencies"
         FAILED=1
 fi
 rm -f "$SOLVFILE"
 
 # --- Check 2: checkrebuild (broken linkage / stale interpreter deps) ---
-if checkrebuild 2>&1 | tee "$LOGDIR/checkrebuild-$TIMESTAMP.log" | grep -q .; then
+CHECKREBUILD_OUTPUT="$(checkrebuild 2>&1)"
+echo "$CHECKREBUILD_OUTPUT" | tee "$LOGDIR/checkrebuild-$TIMESTAMP.log"
+if [ -n "$CHECKREBUILD_OUTPUT" ]; then
         logger -t verify-transaction "FAILED: checkrebuild found packages needing rebuild"
         FAILED=1
 fi
@@ -270,6 +294,70 @@ else
 fi
 EOF
 )
+
+CHECK_REBOOT_REQUIRED_CONTENT=$(cat <<'EOF'
+#!/bin/bash
+# Detects whether a reboot is needed after a pacman transaction, based on
+# two high-confidence signals (not every package upgrade — only ones that
+# can't be fixed by restarting an individual service):
+#   1. The running kernel's module directory no longer exists, meaning a
+#      newer kernel was installed but not yet booted into.
+#   2. systemd (PID 1) itself is running from a deleted binary, meaning
+#      its own package was upgraded. Nothing short of a reboot cleanly
+#      replaces PID 1.
+#
+# If either is true, writes /run/reboot-required (and .pkgs, listing the
+# packages from the triggering transaction via NeedsTargets on stdin).
+# /run is tmpfs, so this clears itself automatically on every reboot —
+# no cleanup step needed.
+
+REBOOT_FLAG=/run/reboot-required
+REBOOT_PKGS=/run/reboot-required.pkgs
+NEED_REBOOT=0
+REASON=""
+
+RUNNING_KERNEL="$(uname -r)"
+if [ ! -d "/usr/lib/modules/$RUNNING_KERNEL" ]; then
+        NEED_REBOOT=1
+        REASON="kernel upgraded (currently running: $RUNNING_KERNEL)"
+fi
+
+if readlink /proc/1/exe 2>/dev/null | grep -q ' (deleted)'; then
+        NEED_REBOOT=1
+        if [ -n "$REASON" ]; then
+                REASON="$REASON; systemd (PID 1) upgraded"
+        else
+                REASON="systemd (PID 1) upgraded"
+        fi
+fi
+
+if [ "$NEED_REBOOT" -eq 1 ]; then
+        echo "$REASON" > "$REBOOT_FLAG"
+        logger -t reboot-required "Reboot required: $REASON"
+        cat >> "$REBOOT_PKGS"
+fi
+EOF
+)
+
+ANNOUNCE_REBOOT_REQUIRED_CONTENT=$(cat <<'EOF'
+# Sourced by interactive shell startup files (bash and zsh). Warns if a
+# prior pacman transaction flagged that a reboot is needed. POSIX-compatible
+# so it works the same under both shells.
+if [ -f /run/reboot-required ]; then
+        echo ""
+        echo "*** System restart required ***"
+        cat /run/reboot-required
+        if [ -f /run/reboot-required.pkgs ]; then
+                echo "Triggered by:"
+                sort -u /run/reboot-required.pkgs | sed 's/^/  - /'
+        fi
+        echo ""
+fi
+EOF
+)
+
+deploy_file "$SCRIPTS_DIR/check-reboot-required.sh" "$CHECK_REBOOT_REQUIRED_CONTENT" 755
+deploy_file "$SCRIPTS_DIR/announce-reboot-required.sh" "$ANNOUNCE_REBOOT_REQUIRED_CONTENT" 644
 
 deploy_file "$SCRIPTS_DIR/inhibit-start.sh" "$INHIBIT_START_CONTENT" 755
 deploy_file "$SCRIPTS_DIR/inhibit-stop.sh" "$INHIBIT_STOP_CONTENT" 755
@@ -372,10 +460,27 @@ ${NETWORK_ACCESS_LINE}
 EOF
 )
 
+REBOOT_REQUIRED_HOOK_CONTENT=$(cat <<'EOF'
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Package
+Target = *
+
+[Action]
+Description = Checking whether a reboot is required...
+When = PostTransaction
+NeedsTargets
+Exec = /etc/pacman.d/hooks/scripts/check-reboot-required.sh
+EOF
+)
+
 deploy_file "$HOOKS_DIR/00-systemd-inhibit-pre.hook" "$INHIBIT_PRE_HOOK_CONTENT"
 deploy_file "$HOOKS_DIR/zz-systemd-inhibit-post.hook" "$INHIBIT_POST_HOOK_CONTENT"
 deploy_file "$HOOKS_DIR/zy-verifytransaction-post.hook" "$VERIFY_HOOK_CONTENT"
 deploy_file "$HOOKS_DIR/arch-audit.hook" "$ARCH_AUDIT_HOOK_CONTENT"
+deploy_file "$HOOKS_DIR/zx-reboot-required-post.hook" "$REBOOT_REQUIRED_HOOK_CONTENT"
 
 # ---------------------------------------------------------------------------
 # 7. Enable services/timers
@@ -383,6 +488,10 @@ deploy_file "$HOOKS_DIR/arch-audit.hook" "$ARCH_AUDIT_HOOK_CONTENT"
 
 log "Enabling paccache.timer..."
 systemctl enable --now paccache.timer
+
+log "Wiring reboot-required announcer into shell startup..."
+ensure_line_in_file /etc/bash.bashrc '[ -r /etc/pacman.d/hooks/scripts/announce-reboot-required.sh ] && . /etc/pacman.d/hooks/scripts/announce-reboot-required.sh'
+ensure_line_in_file /etc/zsh/zshrc '[ -r /etc/pacman.d/hooks/scripts/announce-reboot-required.sh ] && . /etc/pacman.d/hooks/scripts/announce-reboot-required.sh'
 
 # ---------------------------------------------------------------------------
 # 8. Optional smoke test
@@ -436,6 +545,7 @@ log "Pipeline setup complete."
 log "Custom hooks in: $HOOKS_DIR"
 log "Custom scripts in: $SCRIPTS_DIR"
 log "Verification logs in: /var/log/pacman-verify"
+log "Reboot-required signal: /run/reboot-required (checked on new bash/zsh shells)"
 if [ "$RUN_SMOKE_TEST" -eq 0 ]; then
     log "Tip: re-run with --verify to run an end-to-end rollback smoke test."
 fi
