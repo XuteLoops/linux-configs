@@ -2,9 +2,9 @@
 #
 # setup-zsh-p10k.sh
 #
-# Installs zsh, oh-my-zsh, the Powerlevel10k theme, and the MesloLGS Nerd
-# Font, configures ~/.zshrc to use Powerlevel10k, and sets zsh as the
-# target user's default login shell.
+# Installs zsh, oh-my-zsh, the Powerlevel10k theme, zsh-autosuggestions, and
+# the MesloLGS Nerd Font, configures ~/.zshrc to use Powerlevel10k and load
+# zsh-autosuggestions, and sets zsh as the target user's default login shell.
 #
 # Safe to re-run: each step checks whether it's already done before acting.
 #
@@ -88,7 +88,19 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Configure ~/.zshrc
+# 4. Install zsh-autosuggestions plugin
+# ---------------------------------------------------------------------------
+
+AUTOSUGGESTIONS_DIR="$ZSH_CUSTOM/plugins/zsh-autosuggestions"
+if [ -d "$AUTOSUGGESTIONS_DIR" ]; then
+    log "zsh-autosuggestions already installed, skipping"
+else
+    log "Cloning zsh-autosuggestions..."
+    as_user "git clone --quiet --depth=1 https://github.com/zsh-users/zsh-autosuggestions.git '$AUTOSUGGESTIONS_DIR'"
+fi
+
+# ---------------------------------------------------------------------------
+# 5. Configure ~/.zshrc
 # ---------------------------------------------------------------------------
 
 ZSHRC="$TARGET_HOME/.zshrc"
@@ -131,10 +143,21 @@ if ! grep -q 'p10k.zsh' "$ZSHRC"; then
     printf '\n# To customize prompt, run `p10k configure` or edit ~/.p10k.zsh.\n[[ ! -f ~/.p10k.zsh ]] || source ~/.p10k.zsh\n' >> "$ZSHRC"
 fi
 
+# Add zsh-autosuggestions to the plugins=(...) list, if not already present.
+if grep -q '^plugins=' "$ZSHRC"; then
+    if ! grep -q '^plugins=(.*zsh-autosuggestions' "$ZSHRC"; then
+        log "Adding zsh-autosuggestions to plugins..."
+        sed -i '0,/^plugins=(/s//plugins=(zsh-autosuggestions /' "$ZSHRC"
+    fi
+else
+    log "Adding plugins=(zsh-autosuggestions) line..."
+    printf '\nplugins=(zsh-autosuggestions)\n' >> "$ZSHRC"
+fi
+
 chown "$TARGET_USER:$TARGET_USER" "$ZSHRC"
 
 # ---------------------------------------------------------------------------
-# 5. Set zsh as the default shell
+# 6. Set zsh as the default shell
 # ---------------------------------------------------------------------------
 
 ZSH_PATH=$(command -v zsh)
@@ -153,7 +176,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Summary
+# 7. Summary
 # ---------------------------------------------------------------------------
 
 echo
@@ -161,6 +184,7 @@ log "Setup complete."
 log "zsh:              $ZSH_PATH"
 log "oh-my-zsh:        $TARGET_HOME/.oh-my-zsh"
 log "Powerlevel10k:    $P10K_DIR"
+log "zsh-autosuggestions: $AUTOSUGGESTIONS_DIR"
 log "Font installed:   MesloLGS Nerd Font (ttf-meslo-nerd)"
 log "zshrc:            $ZSHRC"
 echo
