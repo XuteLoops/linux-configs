@@ -68,13 +68,27 @@ ensure_aur_helper() {
     rm -rf "$tmpdir"
 }
 
-aur_install() {
+install_pkg_prefer_binary_repo() {
     local pkg="$1"
     if pacman -Qi "$pkg" &>/dev/null; then
-        log "Already installed (AUR): $pkg"
+        log "Already installed: $pkg"
         return
     fi
-    log "Installing (AUR): $pkg"
+
+    # Prefer a pre-built binary from any currently-configured repo over
+    # building from AUR. CachyOS ships this exact package pre-built via
+    # its own repo — same source, same version, they just build it once
+    # centrally so their users never touch Gradle locally (confirmed: same
+    # PKGBUILD/GitLab source as the AUR package). If you've added that
+    # repo (or if Arch's official repos ever pick this package up), this
+    # skips the AUR/Gradle build entirely.
+    if pacman -Si "$pkg" &>/dev/null; then
+        log "Found $pkg in a configured repo — installing prebuilt binary (skipping AUR build)..."
+        pacman -S --needed --noconfirm "$pkg"
+        return
+    fi
+
+    log "Not found in any configured repo — building from AUR: $pkg"
     local helper
     helper=$(command -v paru || command -v yay)
     sudo -u "$BUILD_USER" "$helper" -S --needed --noconfirm "$pkg"
@@ -137,16 +151,39 @@ if pacman -Qi limine-entry-tool &>/dev/null && ! pacman -Qi limine-mkinitcpio-ho
     pacman -Rdd --noconfirm limine-entry-tool
 fi
 
-aur_install limine-mkinitcpio-hook
+install_pkg_prefer_binary_repo limine-mkinitcpio-hook
 # NOTE: limine-mkinitcpio-hook builds a native Java component via Gradle +
 # GraalVM (confirmed on its AUR comments page — this is intentional
-# upstream, not a bug). If the build fails with something like "Cannot
-# find module 'gradle-public-api-legacy' in distribution directory
-# '/usr/share/java/gradle'", it usually means a system-installed `gradle`
-# package (via pacman) is conflicting with the version the PKGBUILD's own
-# Gradle wrapper expects. Fix: `pacman -R gradle` (if installed) and
-# rebuild — the PKGBUILD fetches the exact Gradle version it needs itself.
-aur_install limine-snapper-sync
+# upstream, not a bug). `gradle` is a genuine (make) dependency declared
+# in the package itself, so removing it before rebuilding does nothing —
+# paru/makepkg reinstalls it automatically regardless.
+#
+# CONFIRMED CURRENT BLOCKER on vanilla Arch (no prebuilt-binary repo
+# available): building from AUR fails with "Cannot find module
+# 'gradle-public-api-legacy' in distribution directory
+# '/usr/share/java/gradle'" — a genuine version mismatch between Arch's
+# currently-packaged `gradle` (9.7.0 at time of testing) and what this
+# PKGBUILD's build script expects. Confirmed NOT a local cache/daemon
+# issue (ruled out via a clean ~/.gradle + paru clone-cache wipe before
+# retrying — identical failure on a fresh Gradle daemon). Confirmed on
+# BOTH the stable and -git package variants.
+#
+# This is NOT fixable from inside this script. If you hit this:
+#   1. Check this package's AUR comments page directly for the current
+#      known workaround (blocked here by AUR's bot-protection layer, but
+#      accessible in a normal browser): https://aur.archlinux.org/packages/limine-mkinitcpio-hook
+#   2. Consider adding CachyOS's binary repo, which ships this exact
+#      package (same source/version) pre-built — sidesteps the Gradle
+#      build entirely, the same way CachyOS's own users get it. This is
+#      a deliberate choice to add a third-party repo + trust their
+#      signing key, not something this script does automatically.
+#   3. As a last resort: downgrade `gradle` via the Arch Linux Archive
+#      (https://archive.archlinux.org/packages/g/gradle/) to a version
+#      compatible with this PKGBUILD, and pin it with
+#      `IgnorePkg = gradle` in /etc/pacman.conf. Which version is
+#      actually compatible is unknown — this is trial and error absent
+#      a confirmed answer from the AUR comments page.
+install_pkg_prefer_binary_repo limine-snapper-sync
 
 # --- Add the overlay hook to mkinitcpio.conf ---
 # limine-mkinitcpio-hook provides two overlay hook variants: btrfs-overlayfs
