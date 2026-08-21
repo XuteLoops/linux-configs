@@ -55,13 +55,33 @@ setup_bottles_foundation() {
         --filesystem=/home/"$(target_user)"/.local/share/applications
 
     log_ok "Bottles installed via flatpak with home/desktop-entry access."
+
+    # One shared bottle for both DAWs (rather than one each) — this is
+    # what lets a single yabridge/VST3 config actually work across both,
+    # instead of Bottles and yabridge never being pointed at each other.
+    if bottle_exists "$MUSIC_BOTTLE_NAME"; then
+        log_ok "Bottle '$MUSIC_BOTTLE_NAME' already exists — skipping creation."
+    else
+        log_info "Creating '$MUSIC_BOTTLE_NAME' bottle (runner: $MUSIC_BOTTLE_RUNNER)..."
+        if bottles_cli new \
+            --bottle-name "$MUSIC_BOTTLE_NAME" \
+            --environment application \
+            --arch win64 \
+            --runner "$MUSIC_BOTTLE_RUNNER"
+        then
+            log_ok "Bottle '$MUSIC_BOTTLE_NAME' created."
+        else
+            log_warn "Bottle creation failed — the runner '$MUSIC_BOTTLE_RUNNER'"
+            log_warn "may not be installed in Bottles yet. Open Bottles, let it"
+            log_warn "download that runner (or pick another), then re-run this module."
+        fi
+    fi
+
     log_info "Remaining manual steps (not automatable — need your licensed installers):"
-    log_info "  Ableton: create a bottle, install runner '$ABLETON_RUNNER',"
-    log_info "           run the Ableton installer, then register WineASIO"
-    log_info "           against that bottle's WINEPREFIX (see notes)."
-    log_info "  FL Studio: create a bottle, install runner '$FL_STUDIO_RUNNER',"
-    log_info "             enable the 'allfonts' dependency, enable DXVK + VKD3D,"
-    log_info "             then run the FL Studio installer."
+    log_info "  In Bottles, open '$MUSIC_BOTTLE_NAME' and run the Ableton and"
+    log_info "  FL Studio installers into it (same bottle for both)."
+    log_info "  For FL Studio specifically: enable the 'allfonts' dependency"
+    log_info "  and enable DXVK + VKD3D from the bottle's dependencies list."
 }
 
 install_wineasio() {
@@ -94,13 +114,33 @@ install_wineasio() {
     )
 
     log_ok "WineASIO built at $build_dir/wineasio/build64/wineasio.dll.so"
-    log_info "This still needs registering against each bottle's WINEPREFIX:"
-    log_info "  export WINEPREFIX=<bottle path from 'bottles-cli info bottles-path'>"
-    log_info "  $build_dir/wineasio/wineasio-register"
-    log_info "  cp $build_dir/wineasio/build64/wineasio.dll.so \\"
-    log_info "     \$WINEPREFIX/drive_c/windows/system32/wineasio.dll"
-    log_info "Left as a manual step since WINEPREFIX differs per bottle/per DAW,"
-    log_info "and doing this automatically before a bottle exists isn't possible."
+
+    # Register it against the actual bottle we created above, rather than
+    # leaving this as a fully manual step — this is the piece that
+    # actually makes Bottles + WineASIO talk to each other.
+    local prefix
+    prefix="$(find_bottle_prefix "$MUSIC_BOTTLE_NAME")"
+
+    if [[ -z "$prefix" ]]; then
+        log_warn "Could not locate '$MUSIC_BOTTLE_NAME' bottle's on-disk prefix —"
+        log_warn "register WineASIO manually once you know the path:"
+        log_warn "  export WINEPREFIX=<bottle path>"
+        log_warn "  $build_dir/wineasio/wineasio-register"
+        log_warn "  cp $build_dir/wineasio/build64/wineasio.dll.so \\"
+        log_warn "     \$WINEPREFIX/drive_c/windows/system32/wineasio.dll"
+        return 1
+    fi
+
+    log_info "Found bottle prefix: $prefix"
+    WINEPREFIX="$prefix" run_as_user "$build_dir/wineasio/wineasio-register" \
+        || log_warn "wineasio-register failed — the bottle's runner may need" \
+                     "to be set up/launched at least once first (Bottles" \
+                     "initializes the prefix lazily on first run)."
+
+    run_as_user cp "$build_dir/wineasio/build64/wineasio.dll.so" \
+        "$prefix/drive_c/windows/system32/wineasio.dll" \
+        && log_ok "WineASIO registered against '$MUSIC_BOTTLE_NAME'." \
+        || log_warn "Copy step failed — check $prefix/drive_c/windows/system32 exists."
 }
 
 install_native_daws

@@ -50,6 +50,11 @@ done
 
 require_root
 
+log_info "Syncing package databases and upgrading system (this may take a while"
+log_info "on a system that hasn't been updated recently)..."
+pacman -Syu --noconfirm
+log_ok "System synced and up to date."
+
 run_module() {
     local path="$1"
     log_info "── Running $(basename "$path") ──"

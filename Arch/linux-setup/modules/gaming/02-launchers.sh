@@ -9,11 +9,10 @@ source "$SCRIPT_DIR/lib/common.sh"
 install_runelite() {
     log_info "Installing RuneLite (Old School RuneScape client)..."
 
-    if aur_install runelite-launcher; then
+    if aur_install runelite; then
         log_ok "RuneLite installed."
     else
-        log_warn "runelite-launcher AUR install failed — check AUR page,"
-        log_warn "package name occasionally changes (runelite vs runelite-launcher)."
+        log_warn "runelite AUR install failed — check AUR page for updates."
     fi
 }
 

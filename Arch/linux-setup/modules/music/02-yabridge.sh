@@ -51,14 +51,54 @@ install_bottles_wineloader() {
 
     log_ok "wineloader files placed under ~/.config/environment.d and ~/.local/bin."
     log_warn "A REBOOT is required for the environment.d variable to take effect."
-    log_info "Remaining manual steps:"
-    log_info "  1. In Bottles, install a compatible Wine runner (repo recommends"
-    log_info "     a specific kron4ek build — check $YABRIDGE_BOTTLES_LOADER_REPO"
-    log_info "     for the currently recommended one, this moves)."
-    log_info "  2. Point yabridgectl at the bottle's VST3 folder:"
-    log_info "     yabridgectl add <path-to-bottle>/drive_c/.../VST3"
-    log_info "  3. yabridgectl sync"
+
+    # NOTE: the wineloader needs to be told WHICH bottle to target.
+    # wineloader.conf is the file that holds this, but the repo's own
+    # docs/comments are the authority on the exact variable name/format —
+    # that's not something to guess at and hardcode here, since getting it
+    # wrong would silently point yabridge at the wrong (or no) bottle. Open
+    # $env_dir/wineloader.conf and set it to '$MUSIC_BOTTLE_NAME'.
+    log_warn "IMPORTANT — not yet done automatically: open"
+    log_warn "  $env_dir/wineloader.conf"
+    log_warn "and set the bottle-name variable to: $MUSIC_BOTTLE_NAME"
+    log_warn "(check the repo's README/comments for the exact variable —"
+    log_warn "getting this wrong silently breaks the bridge, so it's not"
+    log_warn "guessed at here.)"
+}
+
+register_vst3_path() {
+    log_info "Registering '$MUSIC_BOTTLE_NAME' bottle's VST3 folder with yabridgectl..."
+
+    local prefix
+    prefix="$(find_bottle_prefix "$MUSIC_BOTTLE_NAME")"
+
+    if [[ -z "$prefix" ]]; then
+        log_warn "Could not locate '$MUSIC_BOTTLE_NAME' bottle's prefix — add"
+        log_warn "the VST3 path manually once plugins are installed:"
+        log_warn "  yabridgectl add <path-to-bottle>/drive_c/Program\\ Files/Common\\ Files/VST3"
+        log_warn "  yabridgectl sync"
+        return 1
+    fi
+
+    local vst3_dir="$prefix/drive_c/Program Files/Common Files/VST3"
+
+    # This is the standard Windows VST3 location; it may not exist yet if
+    # no plugins are installed in the bottle. yabridgectl add itself will
+    # create/track it either way, and re-running sync later (after
+    # installing plugins) is safe and expected.
+    run_as_user mkdir -p "$vst3_dir"
+    run_as_user yabridgectl add "$vst3_dir" \
+        && log_ok "Registered $vst3_dir with yabridgectl." \
+        || log_warn "yabridgectl add failed — check the path above manually."
+
+    run_as_user yabridgectl sync \
+        && log_ok "yabridgectl sync completed." \
+        || log_warn "yabridgectl sync failed — re-run after installing plugins."
+
+    log_info "Re-run 'yabridgectl sync' any time after installing new plugins"
+    log_info "into the '$MUSIC_BOTTLE_NAME' bottle."
 }
 
 install_yabridge
 install_bottles_wineloader
+register_vst3_path

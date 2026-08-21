@@ -116,6 +116,44 @@ ensure_aur_helper() {
 }
 
 # ---------------------------------------------------------------------------
+# Bottles CLI helpers (flatpak com.usebottles.bottles)
+#
+# Syntax confirmed against Bottles' own CLI docs (docs.usebottles.com/
+# advanced/cli). Runs as the invoking user via run_as_user, same as AUR
+# builds — Bottles is a per-user Flatpak install, not root.
+# ---------------------------------------------------------------------------
+
+bottles_cli() {
+    run_as_user flatpak run --command=bottles-cli com.usebottles.bottles "$@"
+}
+
+# Checks the CLI's own JSON listing for an exact-name match, rather than
+# guessing at on-disk folder naming.
+bottle_exists() {
+    local name="$1"
+    bottles_cli --json list bottles 2>/dev/null | grep -q "\"$name\""
+}
+
+# Root directory holding all bottles (NOT a specific bottle's prefix).
+bottles_root_path() {
+    bottles_cli info bottles-path 2>/dev/null | tail -n1
+}
+
+# Locates a bottle's actual on-disk WINEPREFIX directory by display name.
+# Bottles' CLI docs don't document an exact folder-naming/sanitization rule
+# for display name -> directory name (e.g. whether spaces become
+# underscores), so rather than assuming a transform, this searches the
+# reported bottles root for a loosely-matching directory name. Returns
+# empty and a non-zero exit if nothing matches.
+find_bottle_prefix() {
+    local name="$1"
+    local root
+    root="$(bottles_root_path)"
+    [[ -z "$root" ]] && return 1
+    find "$root" -maxdepth 1 -type d -iname "*${name// /*}*" 2>/dev/null | head -n1
+}
+
+# ---------------------------------------------------------------------------
 # Package install wrappers
 #
 # Modules should call these instead of pacman/yay/paru directly, so the
