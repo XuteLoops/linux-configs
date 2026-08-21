@@ -67,7 +67,11 @@ setup_bottles_foundation() {
 install_wineasio() {
     log_info "Building WineASIO (needed for Ableton/FL Studio audio via Bottles)..."
 
-    pkg_install --needed base-devel git
+    # wineasio's build needs Wine's own dev headers (objbase.h,
+    # windef.h, etc under /usr/include/wine) — these ship with the wine
+    # package itself, not with base-devel/git. Missing this caused a
+    # real build failure (objbase.h: No such file or directory).
+    pkg_install --needed base-devel git wine
 
     # jack2 and pipewire-jack conflict (both provide 'jack') — installing
     # both in one transaction fails. Modern Arch systems run PipeWire by
