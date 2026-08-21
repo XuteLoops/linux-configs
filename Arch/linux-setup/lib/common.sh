@@ -38,6 +38,23 @@ run_as_user() {
     sudo -u "$(target_user)" "$@"
 }
 
+# sudo resets the environment by default (env_reset in sudoers, the
+# default on virtually every distro including Arch) — so
+# `VAR=val run_as_user cmd` does NOT reliably pass VAR through to cmd as
+# run by the target user. This does, via `env`, regardless of sudoers
+# env_reset settings.
+#
+# Usage: run_as_user_env VAR1=val1 VAR2=val2 -- command args...
+run_as_user_env() {
+    local envs=()
+    while [[ $# -gt 0 && "$1" != "--" ]]; do
+        envs+=("$1")
+        shift
+    done
+    shift || true  # drop the --
+    sudo -u "$(target_user)" env "${envs[@]}" "$@"
+}
+
 # ---------------------------------------------------------------------------
 # Confirmation prompt
 # ---------------------------------------------------------------------------

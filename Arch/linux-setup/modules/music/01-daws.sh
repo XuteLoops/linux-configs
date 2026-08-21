@@ -132,7 +132,18 @@ install_wineasio() {
     fi
 
     log_info "Found bottle prefix: $prefix"
-    WINEPREFIX="$prefix" run_as_user "$build_dir/wineasio/wineasio-register" \
+    # WINEDLLOVERRIDES=mscoree=d disables Wine's .NET (Mono) integration
+    # for this call specifically — wineasio-register is a native tool and
+    # doesn't need it, and without this Wine pops up a blocking "install
+    # Mono?" dialog on first boot of a prefix, which would hang here in
+    # an unattended run.
+    #
+    # Using run_as_user_env rather than `VAR=val run_as_user` because sudo
+    # resets the environment by default — WINEPREFIX would silently NOT
+    # reach the actual command otherwise, and this would end up
+    # registering wineasio against the wrong (default) prefix.
+    run_as_user_env WINEPREFIX="$prefix" WINEDLLOVERRIDES="mscoree=d" -- \
+        "$build_dir/wineasio/wineasio-register" \
         || log_warn "wineasio-register failed — the bottle's runner may need" \
                      "to be set up/launched at least once first (Bottles" \
                      "initializes the prefix lazily on first run)."
