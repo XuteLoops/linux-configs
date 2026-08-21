@@ -11,6 +11,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 source "$SCRIPT_DIR/config/versions.conf"
 
+require_root
+
 install_tascam_gtk() {
     log_info "Installing tascam-gtk for the US-16x08..."
 
@@ -24,19 +26,48 @@ install_tascam_gtk() {
     fi
 
     log_warn "AUR package '$TASCAM_GTK_AUR_PKG' failed or unavailable."
-    log_warn "Falling back to build from source (onkelDead/tascam-gtk on GitHub) —"
-    log_warn "you've done this before on Fedora, same general process applies:"
+    log_info "Falling back to build from source (onkelDead/tascam-gtk on GitHub)..."
 
-    pkg_install --needed base-devel git gtk3 alsa-lib
+    # Confirmed build deps from the project's own README (autotools-based).
+    pkg_install --needed base-devel autoconf automake autopoint git \
+        gtkmm3 libxml++5.0
 
     local build_dir
     build_dir="$(run_as_user mktemp -d)"
     run_as_user git clone https://github.com/onkelDead/tascam-gtk.git "$build_dir/tascam-gtk"
 
-    log_info "Cloned to $build_dir/tascam-gtk — follow the project's own"
-    log_info "build instructions from here (cmake/make steps have changed"
-    log_info "before, so deferring to the repo's current README rather than"
-    log_info "hardcoding a build command that might go stale)."
+    # Build as the invoking user (standard practice, same reasoning as
+    # AUR builds — no need for root until the final install step).
+    (
+        cd "$build_dir/tascam-gtk" || exit 1
+        run_as_user autoreconf -fiv
+        run_as_user ./configure
+        run_as_user make
+    )
+
+    # make install itself needs root (writes to /usr/local by default),
+    # per the project's own README.
+    (
+        cd "$build_dir/tascam-gtk" || exit 1
+        make install
+    )
+
+    # Refresh desktop/icon caches so the .desktop file this installs
+    # (per the project's data/ directory and GSettings schema) actually
+    # shows up in the application menu without needing a logout.
+    command -v update-desktop-database >/dev/null 2>&1 \
+        && update-desktop-database /usr/local/share/applications 2>/dev/null
+    command -v gtk-update-icon-cache >/dev/null 2>&1 \
+        && gtk-update-icon-cache /usr/local/share/icons/hicolor 2>/dev/null
+
+    if command -v tascamgtk >/dev/null 2>&1; then
+        log_ok "tascam-gtk built and installed — found at $(command -v tascamgtk)"
+    else
+        log_warn "Build completed but the 'tascamgtk' binary wasn't found on PATH."
+        log_warn "Check $build_dir/tascam-gtk for build errors, or the actual"
+        log_warn "binary name may differ — check the project's Makefile.am."
+        return 1
+    fi
 }
 
 install_tascam_gtk

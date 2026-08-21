@@ -9,6 +9,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 source "$SCRIPT_DIR/config/versions.conf"
 
+require_root
+
 fix_libidn_if_needed() {
     # icaclient depends on libidn.so.11 (libidn v1), but modern Arch
     # ships a newer, incompatible libidn by default. Only apply the fix

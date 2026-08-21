@@ -8,6 +8,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 
+require_root
+
 install_google_drive() {
     log_info "Installing Google Drive support..."
     # No official native Linux client. rclone + a mount, or a GUI wrapper
