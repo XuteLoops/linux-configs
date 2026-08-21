@@ -79,11 +79,15 @@ detect_aur_helper() {
 }
 
 ensure_aur_helper() {
-    local found
-    found="$(detect_aur_helper)"
+    # NOTE: intentionally not using `found="$(detect_aur_helper)"` here.
+    # Command substitution runs in a subshell, so detect_aur_helper's
+    # assignment to the global AUR_HELPER would be lost the moment the
+    # subshell exits — call it directly instead so the assignment
+    # actually sticks in this shell.
+    detect_aur_helper >/dev/null
 
-    if [[ -n "$found" ]]; then
-        log_ok "AUR helper already present: $found"
+    if [[ -n "$AUR_HELPER" ]]; then
+        log_ok "AUR helper already present: $AUR_HELPER"
         return 0
     fi
 
