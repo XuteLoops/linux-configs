@@ -138,6 +138,14 @@ if pacman -Qi limine-entry-tool &>/dev/null && ! pacman -Qi limine-mkinitcpio-ho
 fi
 
 aur_install limine-mkinitcpio-hook
+# NOTE: limine-mkinitcpio-hook builds a native Java component via Gradle +
+# GraalVM (confirmed on its AUR comments page — this is intentional
+# upstream, not a bug). If the build fails with something like "Cannot
+# find module 'gradle-public-api-legacy' in distribution directory
+# '/usr/share/java/gradle'", it usually means a system-installed `gradle`
+# package (via pacman) is conflicting with the version the PKGBUILD's own
+# Gradle wrapper expects. Fix: `pacman -R gradle` (if installed) and
+# rebuild — the PKGBUILD fetches the exact Gradle version it needs itself.
 aur_install limine-snapper-sync
 
 # --- Add the overlay hook to mkinitcpio.conf ---
@@ -212,14 +220,18 @@ deploy_file /etc/default/limine "ESP_PATH=$ESP_PATH"
 log "Regenerating initramfs..."
 mkinitcpio -P
 
-# --- Run limine-snapper-sync once, then enable the service ---
-log "Running limine-snapper-sync..."
-limine-snapper-sync
-
-log "Enabling limine-snapper-sync.service..."
-systemctl enable --now limine-snapper-sync.service
-
-# --- Check for the snapshot marker in limine.conf, but don't edit boot entries ---
+# --- Locate limine.conf, then check for (or insert) the snapshot marker ---
+# limine-snapper-sync injects generated snapshot entries at a marker line
+# (//Snapshots or /Snapshots) placed inside the boot entry block you want
+# them to appear under. If one's already there (e.g. included by whatever
+# generated your limine.conf), we leave it alone. If not, we insert one
+# using a conservative heuristic: find the FIRST top-level boot entry
+# block (a line starting at column 0 with "/", Limine's entry-name syntax)
+# and add the marker as the last indented line of that block, before the
+# next top-level entry or end of file. This assumes your first entry is
+# the one you want snapshots under (typically the default/primary kernel
+# entry) — if that's wrong for your setup, edit limine.conf manually
+# afterward; the marker line can simply be moved.
 LIMINE_CONF=""
 for candidate in /boot/limine.conf /boot/EFI/limine/limine.conf /boot/efi/limine.conf; do
     if [ -f "$candidate" ]; then
@@ -236,14 +248,48 @@ if [ -z "$LIMINE_CONF" ]; then
 elif grep -qE '^[[:space:]]*//?[Ss]napshots[[:space:]]*$' "$LIMINE_CONF"; then
     log "Snapshot marker already present in $LIMINE_CONF."
 else
-    warn "$LIMINE_CONF was found, but no //Snapshots marker was detected in it."
-    warn "This module does not auto-edit your boot entries, since the correct"
-    warn "location depends on your specific config. Add a line reading exactly:"
-    warn "    //Snapshots"
-    warn "indented under the boot entry block you want snapshot entries to"
-    warn "appear beneath (e.g. under your main 'Arch Linux' entry), then re-run"
-    warn "'limine-snapper-sync' manually to populate it."
+    log "No snapshot marker found in $LIMINE_CONF — inserting one automatically."
+    backup="${LIMINE_CONF}.$(date +%Y%m%d-%H%M%S).bak"
+    cp -a "$LIMINE_CONF" "$backup"
+    log "Backed up $LIMINE_CONF to $backup first."
+
+    awk '
+        /^\/[^\/]/ {
+            if (in_entry && !inserted) {
+                print "    //Snapshots"
+                inserted = 1
+            }
+            in_entry = 1
+            print
+            next
+        }
+        { print }
+        END {
+            if (in_entry && !inserted) {
+                print "    //Snapshots"
+            }
+        }
+    ' "$LIMINE_CONF" > "${LIMINE_CONF}.tmp"
+
+    if grep -qE '^[[:space:]]*//?[Ss]napshots[[:space:]]*$' "${LIMINE_CONF}.tmp"; then
+        mv "${LIMINE_CONF}.tmp" "$LIMINE_CONF"
+        log "Inserted //Snapshots marker into $LIMINE_CONF (under the first boot entry found)."
+        log "If that's the wrong entry for your setup, just move the line manually."
+    else
+        rm -f "${LIMINE_CONF}.tmp"
+        warn "Could not confidently locate a boot entry block to insert a marker into."
+        warn "$LIMINE_CONF was left unmodified (backup at $backup is identical, safe to remove)."
+        warn "Add a line reading exactly '//Snapshots', indented inside the boot entry"
+        warn "block you want snapshots to appear under, then re-run 'limine-snapper-sync'."
+    fi
 fi
+
+# --- Run limine-snapper-sync once, then enable the service ---
+log "Running limine-snapper-sync..."
+limine-snapper-sync
+
+log "Enabling limine-snapper-sync.service..."
+systemctl enable --now limine-snapper-sync.service
 
 echo
 log "Done."
