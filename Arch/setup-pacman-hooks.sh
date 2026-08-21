@@ -201,7 +201,6 @@ AUR_PKGS=(
     longoverdue
     sync-pacman-hook-git
     reflector-pacman-hook-git
-    pacman-hook-systemd-restart-git
     systemd-cleanup-pacman-hook
     systemd-removed-services-hook
 )
