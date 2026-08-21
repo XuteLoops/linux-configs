@@ -80,10 +80,10 @@ setting them up manually first:
   `70-limine-snapshot-boot.sh` wires snapper snapshots into the Limine
   boot menu. GRUB is explicitly detected and skipped with a clear
   message, not silently ignored — the equivalent `grub-btrfs` integration
-  is a different package/mechanism that hasn't been built yet (see
-  `HANDOFF.md`). This module also stops short of auto-editing
-  `limine.conf`'s actual boot entries — see the module's own comments
-  and the "Modules" table below for exactly what it does and doesn't do.
+  is a different package/mechanism that hasn't been built yet.
+  This module also stops short of auto-editing `limine.conf`'s actual
+  boot entries — see the module's own comments and the "Modules"
+  table below for exactly what it does and doesn't do.
 - **`base-devel` and `git`.** Required for the AUR helper bootstrap
   (building `paru` from source). Some ISOs include these by default;
   others don't. Every module that needs an AUR package installs these
