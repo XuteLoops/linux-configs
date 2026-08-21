@@ -27,10 +27,11 @@ install_native_daws() {
         log_warn "Bitwig Studio AUR install failed — check AUR page for updates."
     fi
 
-    if aur_install reaper-bin; then
+    if pkg_install reaper; then
         log_ok "REAPER installed."
     else
-        log_warn "REAPER AUR install failed — check AUR page for updates."
+        log_warn "REAPER install failed — check if 'reaper' is still in the"
+        log_warn "official extra repo (it was promoted there from AUR)."
     fi
 }
 
@@ -66,7 +67,17 @@ setup_bottles_foundation() {
 install_wineasio() {
     log_info "Building WineASIO (needed for Ableton/FL Studio audio via Bottles)..."
 
-    pkg_install --needed base-devel git jack2 pipewire-jack
+    pkg_install --needed base-devel git
+
+    # jack2 and pipewire-jack conflict (both provide 'jack') — installing
+    # both in one transaction fails. Modern Arch systems run PipeWire by
+    # default, so only add pipewire-jack, and only if neither is already
+    # present.
+    if ! pkg_installed jack2 && ! pkg_installed pipewire-jack; then
+        pkg_install pipewire-jack
+    else
+        log_ok "JACK support already present ($(pkg_installed jack2 && echo jack2 || echo pipewire-jack)) — skipping."
+    fi
 
     local build_dir
     build_dir="$(run_as_user mktemp -d)"
