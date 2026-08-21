@@ -28,11 +28,13 @@ Arch/
     └── modules/
         ├── 00-aur-helpers.sh
         ├── 10-systemd-inhibit.sh
+        ├── 15-snapper-setup.sh
         ├── 20-verify-transaction.sh
         ├── 30-arch-audit.sh
         ├── 40-reboot-required.sh
         ├── 50-paccache.sh
-        └── 60-community-hooks.sh
+        ├── 60-community-hooks.sh
+        └── 70-limine-snapshot-boot.sh
 ```
 
 Every module is **fully standalone** — a single `curl` + `bash` of one
@@ -69,18 +71,19 @@ foundation to run on. Some distros (CachyOS included) provide these by
 default; others (vanilla Arch, most other Arch-based distros) require
 setting them up manually first:
 
-- **BTRFS + Snapper.** `snapper` and `snap-pac` need to be installed and
-  configured, on a BTRFS filesystem, before pacback's snapshot mechanism
-  has anything to work with. If your distro doesn't set this up by
-  default, this needs to happen before running the `20-verify-transaction`
-  module.
-- **Bootloader snapshot integration is optional, not required.** Some
-  distros (e.g. CachyOS with Limine) wire snapshot-boot entries into the
-  bootloader automatically as a convenience. This pipeline's own logic
-  doesn't depend on that — it works the same either way — but don't
-  expect boot-time snapshot entries to appear unless your
-  distro/bootloader combination provides that itself. (Bringing this to
-  non-CachyOS systems is an open item — see `HANDOFF.md`.)
+- **A BTRFS filesystem, with root (/) on a subvolume.** `snapper` and
+  `snap-pac` are installed and configured automatically by
+  `15-snapper-setup.sh` — but the underlying BTRFS layout itself has to
+  already exist; this pipeline doesn't partition disks or create
+  subvolumes for you.
+- **Bootloader snapshot integration currently supports Limine only.**
+  `70-limine-snapshot-boot.sh` wires snapper snapshots into the Limine
+  boot menu. GRUB is explicitly detected and skipped with a clear
+  message, not silently ignored — the equivalent `grub-btrfs` integration
+  is a different package/mechanism that hasn't been built yet (see
+  `HANDOFF.md`). This module also stops short of auto-editing
+  `limine.conf`'s actual boot entries — see the module's own comments
+  and the "Modules" table below for exactly what it does and doesn't do.
 - **`base-devel` and `git`.** Required for the AUR helper bootstrap
   (building `paru` from source). Some ISOs include these by default;
   others don't. Every module that needs an AUR package installs these
@@ -106,8 +109,9 @@ call directly:
   alone rather than duplicated)
 - **pacback** — the snapshot/restore-point manager the rollback
   mechanism is built on
-- **snapper** and **snap-pac** — BTRFS snapshotting, triggered
-  automatically around every pacman transaction
+- **snapper** and **snap-pac** — BTRFS snapshotting, installed and
+  configured automatically by `15-snapper-setup.sh`, triggered
+  automatically around every pacman transaction thereafter
 - **libsolv** (`installcheck`, `archrepo2solv`) — dependency
   satisfiability checking
 - **rebuild-detector** (`checkrebuild`) — broken-linkage /
@@ -127,30 +131,40 @@ call directly:
 
 # Modules
 
-| Module                     | Installs                                                                                                                                                                                             | What it does                                                                                                                                                                                                                              |
-| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `00-aur-helpers.sh`        | `paru` (only if neither `yay` nor `paru` already present)                                                                                                                                            | Ensures an AUR helper is available. Optional — other modules bootstrap this themselves if it hasn't run.                                                                                                                                  |
-| `10-systemd-inhibit.sh`    | — (no packages)                                                                                                                                                                                      | Deploys `PreTransaction`/`PostTransaction` hooks that hold a shutdown/sleep inhibitor lock for the duration of every transaction.                                                                                                         |
-| `20-verify-transaction.sh` | `libsolv`, `rebuild-detector`, `pacback` (AUR)                                                                                                                                                       | **The core gate.** Runs `installcheck` + `checkrebuild` after every transaction; on failure, automatically rolls back to the latest pacback snapshot via a detached background process.                                                   |
-| `30-arch-audit.sh`         | `arch-audit`, `curl`, `openssl`                                                                                                                                                                      | Informational-only CVE scan, deliberately outside the pass/fail gate. Detects at runtime (not by distro assumption) whether the local pacman build supports hook network sandboxing.                                                      |
-| `40-reboot-required.sh`    | — (no packages)                                                                                                                                                                                      | Detects kernel upgrades and systemd (PID 1) upgrades that need a reboot, not just a service restart. Writes `/run/reboot-required`, prints an immediate banner during the transaction, and wires a persistent reminder into bash and zsh. |
-| `50-paccache.sh`           | `pacman-contrib`                                                                                                                                                                                     | Enables `paccache.timer` for periodic package cache pruning.                                                                                                                                                                              |
-| `60-community-hooks.sh`    | `linux-preserve-modules`, `pacman-hook-reload-modules`, `longoverdue`, `sync-pacman-hook-git`, `reflector-pacman-hook-git`, `systemd-cleanup-pacman-hook`, `systemd-removed-services-hook` (all AUR) | Bundle of small, independent AUR hook packages, each shipping its own pacman hook automatically.                                                                                                                                          |
+| Module                       | Installs                                                                                                                                                                                             | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `00-aur-helpers.sh`          | `paru` (only if neither `yay` nor `paru` already present)                                                                                                                                            | Ensures an AUR helper is available. Optional — other modules bootstrap this themselves if it hasn't run.                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `10-systemd-inhibit.sh`      | — (no packages)                                                                                                                                                                                      | Deploys `PreTransaction`/`PostTransaction` hooks that hold a shutdown/sleep inhibitor lock for the duration of every transaction.                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `15-snapper-setup.sh`        | `snapper`, `snap-pac`                                                                                                                                                                                | Creates the snapper `root` config against an existing BTRFS root subvolume, registers it in `/etc/conf.d/snapper`, and enables the timeline/cleanup timers. Foundation for pacback and Limine snapshot-boot integration.                                                                                                                                                                                                                                                                                                                                   |
+| `20-verify-transaction.sh`   | `libsolv`, `rebuild-detector`, `pacback` (AUR)                                                                                                                                                       | **The core gate.** Runs `installcheck` + `checkrebuild` after every transaction; on failure, automatically rolls back to the latest pacback snapshot via a detached background process.                                                                                                                                                                                                                                                                                                                                                                    |
+| `30-arch-audit.sh`           | `arch-audit`, `curl`, `openssl`                                                                                                                                                                      | Informational-only CVE scan, deliberately outside the pass/fail gate. Detects at runtime (not by distro assumption) whether the local pacman build supports hook network sandboxing.                                                                                                                                                                                                                                                                                                                                                                       |
+| `40-reboot-required.sh`      | — (no packages)                                                                                                                                                                                      | Detects kernel upgrades and systemd (PID 1) upgrades that need a reboot, not just a service restart. Writes `/run/reboot-required`, prints an immediate banner during the transaction, and wires a persistent reminder into bash and zsh.                                                                                                                                                                                                                                                                                                                  |
+| `50-paccache.sh`             | `pacman-contrib`                                                                                                                                                                                     | Enables `paccache.timer` for periodic package cache pruning.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `60-community-hooks.sh`      | `linux-preserve-modules`, `pacman-hook-reload-modules`, `longoverdue`, `sync-pacman-hook-git`, `reflector-pacman-hook-git`, `systemd-cleanup-pacman-hook`, `systemd-removed-services-hook` (all AUR) | Bundle of small, independent AUR hook packages, each shipping its own pacman hook automatically.                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `70-limine-snapshot-boot.sh` | `limine-mkinitcpio-hook`, `limine-snapper-sync` (AUR)                                                                                                                                                | Wires snapper snapshots into the Limine boot menu. Requires `15-snapper-setup.sh` to have run first. **Limine only** — detects and cleanly skips GRUB rather than guessing at unsupported territory. Configures `/etc/default/limine`, regenerates the initramfs, and enables `limine-snapper-sync.service` — but stops short of auto-editing `limine.conf`'s boot entries themselves; if no injection marker is found, it tells you exactly what line to add and where, rather than blindly rewriting a config file it hasn't seen the full structure of. |
 
 ## How it fits together
 
-1. **Before a transaction** (`10-systemd-inhibit.sh`, plus `snap-pac`/
+1. **Foundation** (`15-snapper-setup.sh`): snapper is configured against
+   the existing BTRFS root subvolume, with timeline/cleanup timers
+   enabled. Everything else that touches snapshots — pacback,
+   Limine boot integration — depends on this having run first.
+2. **Before a transaction** (`10-systemd-inhibit.sh`, plus `snap-pac`/
    `pacback` from `20-verify-transaction.sh`), snapshots are taken and
    the inhibitor lock blocks sleep/shutdown for the duration.
-2. **The transaction runs** — packages install/upgrade/remove as normal.
-3. **After the transaction**, hooks from every installed module run in
+3. **The transaction runs** — packages install/upgrade/remove as normal.
+4. **After the transaction**, hooks from every installed module run in
    order (pacman runs hook files alphabetically): stale-binary and
    rebuild checks, the core verification gate, CVE auditing, the
    reboot-required check, and finally the inhibitor release.
-4. **If the verification gate fails**, it identifies the most recent
+5. **If the verification gate fails**, it identifies the most recent
    pacback snapshot and launches a detached background process that
    waits for the pacman database lock to clear, then rolls the system
    back to that snapshot automatically.
+6. **Separately from automatic rollback** (`70-limine-snapshot-boot.sh`,
+   Limine only): every snapshot snapper takes also becomes selectable
+   directly from the boot menu, for cases where you want to boot into a
+   prior state manually rather than rely on the automatic gate.
 
 ## Deliberately not included: `pacman-hook-systemd-restart-git`
 

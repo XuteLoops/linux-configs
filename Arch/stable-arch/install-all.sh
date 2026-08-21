@@ -27,11 +27,13 @@ BASE_URL="https://raw.githubusercontent.com/XuteLoops/linux-configs/main/Arch/st
 MODULES=(
     00-aur-helpers.sh
     10-systemd-inhibit.sh
+    15-snapper-setup.sh
     20-verify-transaction.sh
     30-arch-audit.sh
     40-reboot-required.sh
     50-paccache.sh
     60-community-hooks.sh
+    70-limine-snapshot-boot.sh
 )
 
 LOCAL_MODE=0
