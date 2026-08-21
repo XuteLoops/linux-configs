@@ -4,7 +4,10 @@
 #
 # Standalone module: wires snapper snapshots into the Limine boot menu,
 # so a prior snapshot can be selected and booted directly, not just
-# restored via pacback's automatic rollback.
+# restored via pacback's automatic rollback. Also adds the appropriate
+# btrfs-overlayfs hook to mkinitcpio so a booted snapshot is actually
+# usable (writable via an overlay) rather than a broken read-only boot —
+# without this, selecting a snapshot from the menu wouldn't work.
 #
 # Requires: snapper already configured (see 15-snapper-setup.sh) and
 # Limine as the bootloader. GRUB is explicitly NOT supported by this
@@ -136,6 +139,65 @@ fi
 
 aur_install limine-mkinitcpio-hook
 aur_install limine-snapper-sync
+
+# --- Add the overlay hook to mkinitcpio.conf ---
+# limine-mkinitcpio-hook provides two overlay hook variants: btrfs-overlayfs
+# (for the older udev-based mkinitcpio hook set) and sd-btrfs-overlayfs (for
+# the newer systemd-based hook set) — sd-btrfs-overlayfs will fail outright
+# under udev hooks, so which one to use has to be detected, not assumed.
+# Without this hook, selecting a snapshot from the boot menu produces a
+# broken read-only boot (most services need writable /var), not a working
+# rollback — this is what actually makes snapshot-booting useful.
+MKINITCPIO_CONF=/etc/mkinitcpio.conf
+CURRENT_HOOKS_LINE=$(grep -E '^HOOKS=' "$MKINITCPIO_CONF" || true)
+
+if echo "$CURRENT_HOOKS_LINE" | grep -qw systemd; then
+    OVERLAY_HOOK="sd-btrfs-overlayfs"
+elif echo "$CURRENT_HOOKS_LINE" | grep -qw udev; then
+    OVERLAY_HOOK="btrfs-overlayfs"
+else
+    OVERLAY_HOOK=""
+    warn "Could not determine whether mkinitcpio uses the 'systemd' or 'udev'"
+    warn "hook set from HOOKS=(...) in $MKINITCPIO_CONF."
+    warn "Skipping automatic overlay hook insertion — add 'btrfs-overlayfs'"
+    warn "(udev-based) or 'sd-btrfs-overlayfs' (systemd-based) manually, after"
+    warn "the 'filesystems' hook, then re-run 'mkinitcpio -P'."
+fi
+
+if [ -n "$OVERLAY_HOOK" ]; then
+    if echo "$CURRENT_HOOKS_LINE" | grep -qw "$OVERLAY_HOOK"; then
+        log "$OVERLAY_HOOK already present in HOOKS, skipping"
+    else
+        log "Adding $OVERLAY_HOOK to HOOKS (after 'filesystems')..."
+        cp -a "$MKINITCPIO_CONF" "${MKINITCPIO_CONF}.$(date +%Y%m%d-%H%M%S).bak"
+        sed -i -E "/^HOOKS=/ s/(\bfilesystems\b)/\1 ${OVERLAY_HOOK}/" "$MKINITCPIO_CONF"
+        if ! grep -E '^HOOKS=' "$MKINITCPIO_CONF" | grep -qw "$OVERLAY_HOOK"; then
+            warn "Automatic insertion did not appear to work (no 'filesystems'"
+            warn "hook found, or HOOKS=(...) spans multiple lines). Add"
+            warn "'$OVERLAY_HOOK' manually after 'filesystems' in $MKINITCPIO_CONF,"
+            warn "then re-run 'mkinitcpio -P'."
+        fi
+    fi
+
+    if [ "$OVERLAY_HOOK" = "sd-btrfs-overlayfs" ]; then
+        # Known gotcha (confirmed via limine-snapper-sync's own issue tracker):
+        # sd-btrfs-overlayfs's overlayfs-setup.service fails with
+        # "No such file or directory" unless these binaries are explicitly
+        # listed, since the systemd-based initramfs doesn't include them by
+        # default the way the udev-based one implicitly does.
+        for bin in env mktemp mkdir rmdir; do
+            if grep -E '^BINARIES=' "$MKINITCPIO_CONF" | grep -qw "$bin"; then
+                continue
+            fi
+            log "Adding required binary '$bin' to BINARIES (needed by sd-btrfs-overlayfs)..."
+            if grep -q '^BINARIES=' "$MKINITCPIO_CONF"; then
+                sed -i -E "/^BINARIES=/ s/\)/ ${bin})/" "$MKINITCPIO_CONF"
+            else
+                echo "BINARIES=(${bin})" >> "$MKINITCPIO_CONF"
+            fi
+        done
+    fi
+fi
 
 # --- /etc/default/limine ---
 ESP_PATH=$(findmnt -no TARGET /boot/efi 2>/dev/null || true)
