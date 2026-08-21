@@ -13,6 +13,10 @@ source "$SCRIPT_DIR/config/versions.conf"
 
 require_root
 
+log_info "Syncing package databases and upgrading system..."
+pacman -Syu --noconfirm
+log_ok "System synced and up to date."
+
 install_tascam_gtk() {
     log_info "Installing tascam-gtk for the US-16x08..."
 

@@ -10,6 +10,10 @@ source "$SCRIPT_DIR/lib/common.sh"
 
 require_root
 
+log_info "Syncing package databases and upgrading system..."
+pacman -Syu --noconfirm
+log_ok "System synced and up to date."
+
 install_google_drive() {
     log_info "Installing Google Drive support..."
     # No official native Linux client. rclone + a mount, or a GUI wrapper
