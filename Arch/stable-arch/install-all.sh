@@ -22,7 +22,7 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-BASE_URL="https://raw.githubusercontent.com/XuteLoops/linux-configs/main/Arch/modules"
+BASE_URL="https://raw.githubusercontent.com/XuteLoops/linux-configs/main/Arch/stable-arch/modules"
 
 MODULES=(
     00-aur-helpers.sh
