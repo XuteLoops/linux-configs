@@ -170,6 +170,28 @@ find_bottle_prefix() {
     find "$root" -maxdepth 1 -type d -iname "*${name// /*}*" 2>/dev/null | head -n1
 }
 
+# Removes stray bottle directories matching a name that never got a
+# bottle.yml written — this is what bottles-cli new leaves behind when
+# creation fails partway through (e.g. an invalid/unavailable runner
+# name causes it to create the folder shell, then abort silently before
+# writing the config). Leaving these around causes __NNN suffix pileup
+# on repeated failed attempts.
+cleanup_incomplete_bottle() {
+    local name="$1"
+    local root
+    root="$(bottles_root_path)"
+    [[ -z "$root" ]] && return 0
+
+    local dir
+    while IFS= read -r dir; do
+        [[ -z "$dir" ]] && continue
+        if [[ ! -f "$dir/bottle.yml" ]]; then
+            log_warn "Removing incomplete bottle directory: $dir"
+            run_as_user rm -rf "$dir"
+        fi
+    done < <(find "$root" -maxdepth 1 -type d -iname "*${name// /*}*" 2>/dev/null)
+}
+
 # ---------------------------------------------------------------------------
 # Package install wrappers
 #

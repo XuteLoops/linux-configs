@@ -63,17 +63,25 @@ setup_bottles_foundation() {
         log_ok "Bottle '$MUSIC_BOTTLE_NAME' already exists — skipping creation."
     else
         log_info "Creating '$MUSIC_BOTTLE_NAME' bottle (runner: $MUSIC_BOTTLE_RUNNER)..."
-        if bottles_cli new \
+        bottles_cli new \
             --bottle-name "$MUSIC_BOTTLE_NAME" \
             --environment application \
             --arch win64 \
             --runner "$MUSIC_BOTTLE_RUNNER"
-        then
+
+        # Don't trust the exit code alone — Bottles has a documented
+        # history of `new` silently not completing (creates the folder,
+        # never writes bottle.yml) e.g. when the given runner name isn't
+        # actually available. Verify against the real bottle list.
+        if bottle_exists "$MUSIC_BOTTLE_NAME"; then
             log_ok "Bottle '$MUSIC_BOTTLE_NAME' created."
         else
-            log_warn "Bottle creation failed — the runner '$MUSIC_BOTTLE_RUNNER'"
-            log_warn "may not be installed in Bottles yet. Open Bottles, let it"
-            log_warn "download that runner (or pick another), then re-run this module."
+            log_warn "Bottle creation did not complete — '$MUSIC_BOTTLE_RUNNER'"
+            log_warn "may not actually be available. Check with:"
+            log_warn "  flatpak run --command=bottles-cli com.usebottles.bottles \\"
+            log_warn "    --json list components -f category:runners"
+            log_warn "and update MUSIC_BOTTLE_RUNNER in config/versions.conf to match."
+            cleanup_incomplete_bottle "$MUSIC_BOTTLE_NAME"
         fi
     fi
 
