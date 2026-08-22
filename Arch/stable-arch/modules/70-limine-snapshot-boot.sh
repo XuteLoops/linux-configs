@@ -15,13 +15,12 @@
 # and mechanism that hasn't been built here yet.
 #
 # Package install strategy: prefers a pre-built binary from any
-# configured repo over building from AUR. If limine-mkinitcpio-hook /
-# limine-snapper-sync aren't found anywhere, automatically adds CachyOS's
-# binary repo (via their own official installer script) as a fallback,
-# since both packages have a confirmed, unresolved Gradle/GraalVM build
-# issue on vanilla Arch — CachyOS ships the exact same source/version
-# pre-built. Only falls back to an AUR build (which will hit the known
-# Gradle failure) if CachyOS's repo somehow doesn't have it either.
+# configured repo over building from AUR. limine-mkinitcpio-hook and
+# limine-snapper-sync have a confirmed, unresolved Gradle/GraalVM build
+# issue on vanilla Arch — see the comment above the install calls below
+# for the full detail and manual workaround options. This script does
+# NOT automatically add third-party repos (an earlier attempt at that
+# was tried and reverted — see the same comment for why).
 #
 # limine.conf marker handling: if the //Snapshots injection marker isn't
 # already present, this module inserts one automatically — finds the
@@ -75,30 +74,6 @@ ensure_aur_helper() {
     rm -rf "$tmpdir"
 }
 
-ensure_cachyos_repo() {
-    if grep -qE '^\[cachyos\]' /etc/pacman.conf; then
-        log "CachyOS repo already configured."
-        return
-    fi
-
-    log "Adding CachyOS's binary repo — limine-mkinitcpio-hook and"
-    log "limine-snapper-sync have a confirmed, unresolved Gradle/GraalVM"
-    log "build issue on vanilla Arch; CachyOS ships the exact same"
-    log "package (same source/version) pre-built."
-    log "(Using CachyOS's own official installer script, not a hand-rolled"
-    log "repo/key setup — https://github.com/CachyOS/cachyos-repo-add-script)"
-
-    local tmpdir
-    tmpdir=$(mktemp -d)
-    curl -fsSL https://raw.githubusercontent.com/CachyOS/cachyos-repo-add-script/develop/cachyos-repo.sh -o "$tmpdir/cachyos-repo.sh"
-    chmod +x "$tmpdir/cachyos-repo.sh"
-    (cd "$tmpdir" && ./cachyos-repo.sh)
-    rm -rf "$tmpdir"
-
-    log "Syncing package databases..."
-    pacman -Sy
-}
-
 install_pkg_prefer_binary_repo() {
     local pkg="$1"
     if pacman -Qi "$pkg" &>/dev/null; then
@@ -107,26 +82,15 @@ install_pkg_prefer_binary_repo() {
     fi
 
     # Prefer a pre-built binary from any currently-configured repo over
-    # building from AUR.
+    # building from AUR (covers CachyOS's repo if you've added it
+    # yourself, or any future official repo that picks this package up).
     if pacman -Si "$pkg" &>/dev/null; then
         log "Found $pkg in a configured repo — installing prebuilt binary (skipping AUR build)..."
         pacman -S --needed --noconfirm "$pkg"
         return
     fi
 
-    # Not found anywhere yet. This package has a confirmed, unresolved
-    # upstream Gradle/GraalVM build incompatibility on vanilla Arch (see
-    # HANDOFF.md) — rather than attempt the AUR build we already know
-    # fails, add CachyOS's repo (same source/version, pre-built) first.
-    ensure_cachyos_repo
-
-    if pacman -Si "$pkg" &>/dev/null; then
-        log "Found $pkg in CachyOS's repo — installing prebuilt binary..."
-        pacman -S --needed --noconfirm "$pkg"
-        return
-    fi
-
-    log "Still not found after adding CachyOS's repo — falling back to AUR build: $pkg"
+    log "Not found in any configured repo — building from AUR: $pkg"
     local helper
     helper=$(command -v paru || command -v yay)
     sudo -u "$BUILD_USER" "$helper" -S --needed --noconfirm "$pkg"
@@ -190,18 +154,47 @@ if pacman -Qi limine-entry-tool &>/dev/null && ! pacman -Qi limine-mkinitcpio-ho
 fi
 
 install_pkg_prefer_binary_repo limine-mkinitcpio-hook
-# NOTE: if not found in any already-configured repo, install_pkg_prefer_binary_repo
-# automatically adds CachyOS's binary repo (via their own official
-# installer script) as a fallback before attempting an AUR build, since
-# this package has a confirmed, unresolved Gradle/GraalVM build issue on
-# vanilla Arch as of testing (both the stable and -git variants fail
-# identically, even after a clean ~/.gradle + paru clone-cache wipe, with
+# NOTE: limine-mkinitcpio-hook builds a native Java component via Gradle +
+# GraalVM (confirmed on its AUR comments page — this is intentional
+# upstream, not a bug). `gradle` is a genuine (make) dependency declared
+# in the package itself, so removing it before rebuilding does nothing —
+# paru/makepkg reinstalls it automatically regardless.
+#
+# CONFIRMED CURRENT BLOCKER on vanilla Arch: building from AUR fails with
 # "Cannot find module 'gradle-public-api-legacy' in distribution
 # directory '/usr/share/java/gradle'" — a genuine version mismatch
-# between Arch's currently-packaged gradle and what this PKGBUILD
-# expects, not fixable from inside this script). If CachyOS's repo also
-# doesn't have it for some reason, this falls back to the AUR build as a
-# last resort, which will hit the same known failure.
+# between Arch's currently-packaged gradle and what this PKGBUILD's
+# build script expects. Confirmed NOT a local cache/daemon issue (ruled
+# out via a clean ~/.gradle + paru clone-cache wipe, fresh Gradle daemon
+# each time). Confirmed on BOTH the stable and -git package variants.
+# Checked the AUR comments page directly for this exact error string:
+# nothing found as of this testing.
+#
+# An automatic CachyOS-repo fallback was tried here and reverted — their
+# cachyos-repo.sh installer silently failed to add a working repo section
+# when run non-interactively inside this script (no [cachyos] section
+# ever appeared in pacman.conf despite it printing "Done installing
+# CachyOS repo"), while still installing CachyOS's patched pacman fork as
+# a side effect — a real system change with no compensating benefit, and
+# a genuinely confusing state to end up in. Do NOT re-add automatic repo
+# manipulation here without addressing why that installer failed silently
+# in a non-interactive context first.
+#
+# This is NOT fixable from inside this script. If you hit this:
+#   1. Check this package's AUR comments page directly for the current
+#      known workaround (blocked here by AUR's bot-protection layer, but
+#      accessible in a normal browser): https://aur.archlinux.org/packages/limine-mkinitcpio-hook
+#   2. If you want to try CachyOS's repo (same source/version, pre-built,
+#      sidesteps Gradle entirely), run their installer yourself,
+#      interactively, and watch its actual output — do not pipe it
+#      through a script: https://github.com/CachyOS/cachyos-repo-add-script
+#      Be aware it installs a patched pacman fork as a side effect
+#      (CachyOS's own docs note this may cause compatibility warnings
+#      with standard Arch workflows).
+#   3. As a last resort: downgrade `gradle` via the Arch Linux Archive
+#      (https://archive.archlinux.org/packages/g/gradle/) to a version
+#      compatible with this PKGBUILD, and pin it with
+#      `IgnorePkg = gradle` in /etc/pacman.conf.
 install_pkg_prefer_binary_repo limine-snapper-sync
 
 # --- Add the overlay hook to mkinitcpio.conf ---
