@@ -36,19 +36,30 @@ install_linux_headers() {
 }
 
 set_pacman_architecture() {
-    # Multi-value Architecture directive: prefer the detected microarch
-    # tier, fall back to plain x86_64. This doesn't affect ALHP (which
-    # uses same-tagged x86_64 packages in a higher-priority repo instead —
-    # see setup_alhp_repo), but is the correct forward-compatible setting
-    # for any repo that DOES tag packages at the microarch level.
+    # Multi-value Architecture directive: x86_64 MUST come first.
+    #
+    # Confirmed directly on pacman.conf(5): pacman sets the $arch variable
+    # used in mirrorlist URL construction to the FIRST listed Architecture
+    # value, not "whichever makes sense per-repo". Putting the microarch
+    # tier first (as an earlier version of this function did) makes $arch
+    # resolve to e.g. "x86_64_v3" for EVERY repo sharing the standard
+    # mirrorlist — including core/extra/multilib, none of which exist at
+    # that path on any real mirror (only plain x86_64 does). That breaks
+    # ALL package installation with 404s across every mirror, for every
+    # package — a genuinely severe bug, confirmed against a real failure.
+    #
+    # x86_64 first keeps $arch resolving correctly for the repos that
+    # need it, while still listing the microarch tier as a second allowed
+    # value — forward-compatible with any repo that DOES tag packages at
+    # that level, without breaking anything that doesn't.
     local conf="/etc/pacman.conf"
     if [[ "$MARCH_LEVEL" == "x86-64" ]]; then
         log_skip "Baseline x86-64 CPU — leaving Architecture = auto as-is"
         return 0
     fi
     local arch_tag="${MARCH_LEVEL//-/_}"   # x86-64-v3 -> x86_64_v3
-    set_kv "Architecture" "${arch_tag} x86_64" "$conf" " = "
-    log_success "Set Architecture = ${arch_tag} x86_64 in $conf"
+    set_kv "Architecture" "x86_64 ${arch_tag}" "$conf" " = "
+    log_success "Set Architecture = x86_64 ${arch_tag} in $conf (x86_64 first — required for correct \$arch mirrorlist substitution)"
 }
 
 setup_alhp_repo() {
