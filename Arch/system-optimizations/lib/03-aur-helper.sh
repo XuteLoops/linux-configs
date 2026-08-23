@@ -3,14 +3,16 @@
 # for: preload, arch-manwarn, arch-update, and the ALHP-related AUR
 # tooling). Sets global AUR_HELPER to the binary name to use.
 #
-# Builds plain `paru` from source rather than `paru-bin` (the prebuilt
-# binary version). paru-bin is compiled upstream against whatever
-# libalpm version existed at build time — if that drifts out of sync
-# with the local system's pacman/libalpm (e.g. after any pacman
-# upgrade), it breaks with a "cannot open shared object file" error at
-# runtime. This happened for real during this project's own development.
-# Building from source instead compiles against whatever libalpm is
-# actually on the machine right now, so it can't go stale this way.
+# Strategy: try paru-bin (prebuilt binary, installs in seconds) first,
+# and verify it actually works immediately after install. paru-bin is
+# compiled upstream against whatever libalpm version existed at build
+# time — if that's drifted from the local system's current libalpm (e.g.
+# after a pacman upgrade), it fails at runtime with a "cannot open shared
+# object file" error. This happened for real during this project. Rather
+# than always paying a multi-minute compile to avoid that risk
+# unconditionally, only fall back to building plain `paru` from source
+# (compiles against whatever libalpm is actually on the machine right
+# now, so it can't go stale) when paru-bin turns out broken.
 #
 # Also verifies an existing AUR helper actually RUNS (not just that the
 # binary exists) before trusting it — a present-but-broken binary (same
@@ -30,11 +32,24 @@ setup_aur_helper() {
     fi
 
     if command -v paru &>/dev/null; then
-        log_warn "paru binary exists but is broken (failed --version check) — rebuilding from source."
-    else
-        log_info "No AUR helper found — building paru from source."
+        log_warn "paru binary exists but is broken (failed --version check) — reinstalling."
     fi
-    _build_paru_from_source
+
+    log_info "Trying paru-bin (prebuilt binary, fast) first..."
+    if _install_paru_pkg "paru-bin" && _working_aur_helper paru; then
+        AUR_HELPER="paru"
+        log_success "Installed AUR helper: paru (prebuilt binary)"
+        return 0
+    fi
+
+    log_warn "paru-bin unavailable or broken (e.g. libalpm ABI mismatch against this system) — building paru from source instead. This compiles locally and will take longer, but can't go stale the same way."
+    _install_paru_pkg "paru" \
+        || die "Failed to build/install paru from source"
+
+    _working_aur_helper paru \
+        || die "paru was built from source but still fails to run — check the build output above manually."
+    AUR_HELPER="paru"
+    log_success "Installed AUR helper: paru (built from source)"
 }
 
 _working_aur_helper() {
@@ -42,7 +57,11 @@ _working_aur_helper() {
     command -v "$bin" &>/dev/null && "$bin" --version &>/dev/null
 }
 
-_build_paru_from_source() {
+# Clones and installs the given AUR package name (paru-bin or paru).
+# Returns non-zero on failure rather than dying, so the caller can decide
+# whether to fall back rather than aborting the whole script.
+_install_paru_pkg() {
+    local pkgname="$1"
     pkg_install base-devel git
 
     local build_dir
@@ -52,16 +71,17 @@ _build_paru_from_source() {
 
     # Build must happen as a non-root user; makepkg refuses to run as root.
     chown -R "$user:$user" "$build_dir"
-    sudo -u "$user" git clone --depth=1 https://aur.archlinux.org/paru.git "$build_dir/paru" \
-        || die "Failed to clone paru from AUR"
-    (
-        cd "$build_dir/paru" \
-            && sudo -u "$user" makepkg -si --noconfirm
-    ) || die "Failed to build/install paru"
+    if ! sudo -u "$user" git clone --depth=1 "https://aur.archlinux.org/${pkgname}.git" "$build_dir/${pkgname}"; then
+        log_warn "Failed to clone ${pkgname} from AUR"
+        rm -rf "$build_dir"
+        return 1
+    fi
+
+    if ! (cd "$build_dir/${pkgname}" && sudo -u "$user" makepkg -si --noconfirm); then
+        log_warn "Failed to build/install ${pkgname}"
+        rm -rf "$build_dir"
+        return 1
+    fi
 
     rm -rf "$build_dir"
-
-    _working_aur_helper paru || die "paru was built but still fails to run — check the build output above manually."
-    AUR_HELPER="paru"
-    log_success "Installed AUR helper: paru (built from source)"
 }
