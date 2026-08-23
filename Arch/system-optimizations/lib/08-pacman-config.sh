@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # 08-pacman-config.sh
 #
-# Included: ParallelDownloads (conditional on thread count), CompressXZ/
-#   CompressZst --threads=0, DownloadUser=alpm, pacman-contrib (pacdiff +
-#   paccache), paccache hook (default -r only, NOT -ruk0 — keeps last 3
-#   versions of uninstalled packages too, for rollback safety), arch-manwarn,
-#   arch-update, pacman database backup, installed-package list snapshot.
+# Included: ParallelDownloads (conditional on thread count), DownloadUser=alpm,
+#   pacman-contrib (pacdiff + paccache), paccache hook (default -r only, NOT
+#   -ruk0 — keeps last 3 versions of uninstalled packages too, for rollback
+#   safety), arch-manwarn, arch-update, pacman database backup,
+#   installed-package list snapshot.
 # Excluded: namcap, lostfiles (contingent on unresolved systemd live-reload
-#   issue), booster (kept out of the distributable script by design).
+#   issue), booster (kept out of the distributable script by design),
+#   CompressXZ/CompressZst (removed by request — caused more problems on
+#   the target system than the faster package-cache compression was worth).
 
 configure_pacman_conf() {
     local conf="/etc/pacman.conf"
@@ -19,10 +21,6 @@ configure_pacman_conf() {
     fi
     set_pacman_option "ParallelDownloads" "$pd_value" "$conf"
     log_success "ParallelDownloads = $pd_value (nproc=$(nproc))"
-
-    set_pacman_option "CompressXZ" "/usr/bin/xz -T0 -c -z -" "$conf"
-    set_pacman_option "CompressZst" "/usr/bin/zstd -T0 -c -z -q -" "$conf"
-    log_success "CompressXZ / CompressZst set to use all threads (-T0)"
 
     set_pacman_option "DownloadUser" "alpm" "$conf"
     log_success "DownloadUser = alpm set"
