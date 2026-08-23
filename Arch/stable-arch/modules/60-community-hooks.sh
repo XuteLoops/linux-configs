@@ -14,11 +14,15 @@
 #                                   referencing deleted shared library
 #                                   handles
 #   sync-pacman-hook-git         - syncs / and /boot after transactions
-#   reflector-pacman-hook-git    - refreshes the mirrorlist when
-#                                   pacman-mirrorlist updates
 #   systemd-cleanup-pacman-hook  - cleans up orphaned systemd units
 #   systemd-removed-services-hook - flags services removed by a package
 #                                   but still referenced
+#
+# NOTE: reflector-pacman-hook-git is deliberately NOT included.
+# reflector/mirrorlist management is handled by a separate,
+# out-of-scope script that installs reflector directly and enables its
+# service — removing this AUR package dependency and its own moving
+# parts from this pipeline.
 #
 # NOTE: pacman-hook-systemd-restart-git is deliberately NOT included.
 # It restarts every service whose underlying binary/library changed
@@ -97,7 +101,6 @@ AUR_PKGS=(
     pacman-hook-reload-modules
     longoverdue
     sync-pacman-hook-git
-    reflector-pacman-hook-git
     systemd-cleanup-pacman-hook
     systemd-removed-services-hook
 )
