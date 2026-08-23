@@ -4,7 +4,11 @@
 
 setup_rtkit() {
     pkg_install rtkit
-    enable_service rtkitd.service
+    # Correct unit name is rtkit-daemon.service — confirmed against the
+    # actual rtkit package file list (usr/lib/systemd/system/rtkit-daemon.service).
+    # An earlier version of this script had this wrong as "rtkitd.service",
+    # which doesn't exist under that name and silently failed to enable.
+    enable_service rtkit-daemon.service
 }
 
 add_user_to_audio_group() {
