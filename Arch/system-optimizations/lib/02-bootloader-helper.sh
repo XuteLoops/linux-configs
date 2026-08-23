@@ -161,16 +161,84 @@ _find_limine_conf() {
 # it in the first place. Only relevant when BOOTLOADER=limine; no-ops
 # otherwise. Runs early in the kernel task, before any add_kernel_param
 # calls, so those land on top of whatever entries this creates.
+#
+# limine-mkinitcpio-hook is attempted as a bonus (it also handles FUTURE
+# kernel changes automatically via a pacman hook, not just this one
+# run) but is NOT depended on — it uses a fragile Gradle/Java build
+# toolchain that failed for real during this project ("Cannot find
+# module 'gradle-public-api-legacy'"), and was previously wired through
+# the hard-failing aur_install, which meant one broken AUR package's
+# Java toolchain issue killed the ENTIRE rest of the script. Now uses
+# aur_install_optional, and ensure_limine_kernel_entries() below
+# provides a guaranteed, dependency-free bash fallback that works
+# regardless of whether the hook ever successfully installs.
 setup_limine_autoupdate() {
     [[ "$BOOTLOADER" == "limine" ]] || return 0
 
     if is_pkg_installed limine-mkinitcpio-hook; then
         log_skip "limine-mkinitcpio-hook already installed"
     else
-        aur_install limine-mkinitcpio-hook
+        aur_install_optional limine-mkinitcpio-hook \
+            || log_warn "limine-mkinitcpio-hook install failed (known fragile Gradle/Java build) — falling back to ensure_limine_kernel_entries() for this run instead. Future kernel installs will need this script re-run to pick up new entries, or the hook fixed/installed manually."
     fi
 
     mkinitcpio -P \
-        && log_success "Regenerated initramfs + Limine boot entries — check your boot menu for linux-zen now." \
+        && log_success "Regenerated initramfs." \
         || log_warn "mkinitcpio -P failed — check manually."
+}
+
+# Guaranteed, dependency-free fallback: directly clones an existing
+# limine.conf entry's structure for any installed-but-missing kernel,
+# substituting only the kernel name — no Gradle, no Java, no AUR
+# package required. Keeps the SAME cmdline: value as the template entry,
+# so newly-created entries inherit whatever custom kernel params
+# (preempt=full, resume=, etc.) have already been applied via
+# add_kernel_param. Uses /boot/vmlinuz-* directly as the source of truth
+# for "what kernels are actually installed" — the same thing Limine
+# itself reads — rather than parsing package names, which risks false
+# matches (e.g. "linux-firmware" is not a bootable kernel).
+ensure_limine_kernel_entries() {
+    [[ "$BOOTLOADER" == "limine" ]] || return 0
+
+    local conf
+    conf=$(_find_limine_conf)
+    if [[ -z "$conf" ]]; then
+        log_warn "Could not locate limine.conf — cannot verify kernel entries."
+        return 1
+    fi
+
+    if ! grep -q '^/Arch Linux (linux)$' "$conf"; then
+        log_skip "No plain 'linux' entry found to use as a template — skipping auto-entry creation. Add entries for other kernels manually if needed."
+        return 0
+    fi
+
+    local template
+    template=$(awk '
+        /^\/Arch Linux \(linux\)$/ { f=1 }
+        f { print; if ($0 ~ /^[[:space:]]*module_path:/) exit }
+    ' "$conf")
+
+    local vmlinuz kernel added=0
+    for vmlinuz in /boot/vmlinuz-*; do
+        [[ -f "$vmlinuz" ]] || continue
+        kernel="${vmlinuz##*/vmlinuz-}"
+        [[ "$kernel" == "linux" ]] && continue
+
+        if grep -qF "boot():/vmlinuz-${kernel}" "$conf"; then
+            log_skip "limine.conf already has an entry for ${kernel}"
+            continue
+        fi
+
+        local new_block="$template"
+        new_block="${new_block//(linux)/(${kernel})}"
+        new_block="${new_block//vmlinuz-linux/vmlinuz-${kernel}}"
+        new_block="${new_block//initramfs-linux/initramfs-${kernel}}"
+
+        backup_file "$conf"
+        printf '\n%s\n' "$new_block" >> "$conf"
+        log_success "Added limine.conf entry for ${kernel} (cloned from the linux template, same cmdline:)"
+        added=$((added + 1))
+    done
+
+    [[ "$added" -eq 0 ]] && log_skip "No missing kernel entries to add"
 }
