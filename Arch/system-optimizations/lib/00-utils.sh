@@ -133,6 +133,14 @@ append_once() {
 
 # Replaces a `key=value` style line in a config file, or appends it if the
 # key doesn't exist yet. Only matches uncommented keys.
+#
+# WARNING: only safe for genuinely single-line values. Do NOT use this on
+# files where the existing value might span multiple lines via backslash
+# continuation (e.g. stock /etc/makepkg.conf's default CFLAGS) — the sed
+# regex here only matches the first line, leaving orphaned continuation
+# lines behind and corrupting the file's shell syntax. Use
+# set_shell_assignment() instead for that case. (This bit us for real:
+# see 04-compiler-flags.sh's history.)
 set_kv() {
     local key="$1" value="$2" file="$3" sep="${4:-=}"
     backup_file "$file"
@@ -141,6 +149,40 @@ set_kv() {
     else
         printf '%s%s%s\n' "$key" "$sep" "$value" >> "$file"
     fi
+}
+
+# Sets a shell-style `KEY="value"` assignment in a config file that is
+# itself valid shell (e.g. makepkg.conf), correctly handling an existing
+# assignment that spans MULTIPLE lines via trailing backslash
+# continuation — which is exactly how stock Arch's /etc/makepkg.conf
+# ships CFLAGS by default. Removes the entire old assignment (all its
+# continuation lines) before appending the new single-line replacement,
+# rather than leaving orphaned fragments behind.
+set_shell_assignment() {
+    local key="$1" value="$2" file="$3"
+    backup_file "$file"
+
+    local tmpfile
+    tmpfile=$(mktemp)
+
+    awk -v key="$key" '
+        BEGIN { skip = 0 }
+        {
+            if (skip) {
+                if ($0 ~ /\\[[:space:]]*$/) { next }
+                skip = 0
+                next
+            }
+            if ($0 ~ "^" key "=") {
+                if ($0 ~ /\\[[:space:]]*$/) { skip = 1; next }
+                next
+            }
+            print
+        }
+    ' "$file" > "$tmpfile"
+
+    printf '%s="%s"\n' "$key" "$value" >> "$tmpfile"
+    mv "$tmpfile" "$file"
 }
 
 # Uncomments a line matching a pattern (e.g. "#ParallelDownloads" -> "ParallelDownloads")

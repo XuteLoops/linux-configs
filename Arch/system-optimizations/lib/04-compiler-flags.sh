@@ -22,9 +22,17 @@ configure_makepkg_flags() {
 
     local cflags='-O3 -march=native -flto=auto -pipe -fno-plt'
 
-    set_kv "CFLAGS" "\"${cflags}\"" "$makepkg_conf"
-    set_kv "CXXFLAGS" "\"\${CFLAGS}\"" "$makepkg_conf"
-    set_kv "MAKEFLAGS" "\"-j\$(nproc)\"" "$makepkg_conf"
+    # set_shell_assignment (not set_kv) — required here because stock
+    # Arch's makepkg.conf ships CFLAGS as a multi-line value via
+    # backslash continuation. set_kv's sed-based single-line replace
+    # left orphaned continuation-line fragments behind, corrupting the
+    # file's shell syntax (confirmed for real: `source /etc/makepkg.conf`
+    # failed with "unexpected EOF while looking for matching `'"` after
+    # an earlier version of this function ran). set_shell_assignment
+    # removes the ENTIRE old assignment, continuation lines included.
+    set_shell_assignment "CFLAGS" "$cflags" "$makepkg_conf"
+    set_shell_assignment "CXXFLAGS" '${CFLAGS}' "$makepkg_conf"
+    set_shell_assignment "MAKEFLAGS" '-j$(nproc)' "$makepkg_conf"
 
     log_success "Set CFLAGS/CXXFLAGS/MAKEFLAGS in $makepkg_conf"
     log_info "  CFLAGS=$cflags"
