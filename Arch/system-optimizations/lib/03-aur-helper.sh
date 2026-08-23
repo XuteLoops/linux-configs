@@ -3,21 +3,22 @@
 # for: preload, arch-manwarn, arch-update, and the ALHP-related AUR
 # tooling). Sets global AUR_HELPER to the binary name to use.
 #
-# Strategy: try paru-bin (prebuilt binary, installs in seconds) first,
-# and verify it actually works immediately after install. paru-bin is
-# compiled upstream against whatever libalpm version existed at build
-# time — if that's drifted from the local system's current libalpm (e.g.
-# after a pacman upgrade), it fails at runtime with a "cannot open shared
-# object file" error. This happened for real during this project. Rather
-# than always paying a multi-minute compile to avoid that risk
-# unconditionally, only fall back to building plain `paru` from source
-# (compiles against whatever libalpm is actually on the machine right
-# now, so it can't go stale) when paru-bin turns out broken.
+# yay is tried before paru at EVERY tier, per explicit preference:
+#   1. yay already installed and working -> use it.
+#   2. paru already installed and working -> use it.
+#   3. yay-bin (prebuilt).
+#   4. paru-bin (prebuilt).
+#   5. yay from source (Go — much lighter peak memory during linking
+#      than paru's large Rust dependency tree; confirmed for real during
+#      this project that building paru from source can be OOM-killed
+#      mid-link on a memory-constrained machine — signal 9/SIGKILL).
+#   6. paru from source (final resort).
 #
-# Also verifies an existing AUR helper actually RUNS (not just that the
-# binary exists) before trusting it — a present-but-broken binary (same
-# ABI-mismatch failure mode) would otherwise go undetected until the
-# first aur_install() call fails deep into a later task.
+# "Working" is checked by actually running the binary (--version), not
+# just checking the package/file exists — a present-but-broken binary
+# (e.g. linked against a libalpm version that's since changed after a
+# pacman upgrade) would otherwise go undetected until the first real
+# aur_install() call fails deep into a later task.
 
 setup_aur_helper() {
     if _working_aur_helper yay; then
@@ -31,25 +32,37 @@ setup_aur_helper() {
         return 0
     fi
 
-    if command -v paru &>/dev/null; then
-        log_warn "paru binary exists but is broken (failed --version check) — reinstalling."
+    log_info "Trying yay-bin (prebuilt, fast) first..."
+    if _install_aur_helper_pkg "yay-bin" && _working_aur_helper yay; then
+        AUR_HELPER="yay"
+        log_success "Installed AUR helper: yay (prebuilt binary)"
+        return 0
     fi
+    log_warn "yay-bin unavailable or broken — trying paru-bin instead."
+    _remove_if_installed "yay-bin"
 
-    log_info "Trying paru-bin (prebuilt binary, fast) first..."
-    if _install_paru_pkg "paru-bin" && _working_aur_helper paru; then
+    if _install_aur_helper_pkg "paru-bin" && _working_aur_helper paru; then
         AUR_HELPER="paru"
         log_success "Installed AUR helper: paru (prebuilt binary)"
         return 0
     fi
+    log_warn "paru-bin also unavailable or broken — both prebuilt options failed. Building yay from source (Go — much lighter on memory during linking than paru's Rust dependency tree, less likely to hit an OOM kill on constrained systems)."
+    _remove_if_installed "paru-bin"
 
-    log_warn "paru-bin unavailable or broken (e.g. libalpm ABI mismatch against this system) — building paru from source instead. This compiles locally and will take longer, but can't go stale the same way."
-    _install_paru_pkg "paru" \
-        || die "Failed to build/install paru from source"
+    if _install_aur_helper_pkg "yay" && _working_aur_helper yay; then
+        AUR_HELPER="yay"
+        log_success "Installed AUR helper: yay (built from source)"
+        return 0
+    fi
+    log_warn "Building yay from source also failed — falling back to building paru from source as a final resort."
+
+    _install_aur_helper_pkg "paru" \
+        || die "All AUR helper install options exhausted (yay-bin, paru-bin, yay from source, paru from source) — cannot proceed. Check the build output above."
 
     _working_aur_helper paru \
         || die "paru was built from source but still fails to run — check the build output above manually."
     AUR_HELPER="paru"
-    log_success "Installed AUR helper: paru (built from source)"
+    log_success "Installed AUR helper: paru (built from source, last resort)"
 }
 
 _working_aur_helper() {
@@ -57,20 +70,44 @@ _working_aur_helper() {
     command -v "$bin" &>/dev/null && "$bin" --version &>/dev/null
 }
 
-# Clones and installs the given AUR package name (paru-bin or paru).
-# Returns non-zero on failure rather than dying, so the caller can decide
-# whether to fall back rather than aborting the whole script.
-_install_paru_pkg() {
+# Removes a package if it's installed, warning (not dying) on failure —
+# used to clean up a broken prebuilt attempt before trying the next
+# candidate. Required when moving between -bin and source variants of
+# the SAME tool (they conflict, same provided binary); done as general
+# hygiene otherwise even where not strictly required to avoid a conflict.
+_remove_if_installed() {
+    local pkgname="$1"
+    if is_pkg_installed "$pkgname"; then
+        log_info "Removing non-functional ${pkgname}..."
+        pacman -R --noconfirm "$pkgname" \
+            || log_warn "Failed to remove ${pkgname} — may cause a conflict on the next install attempt."
+    fi
+}
+
+# Clones and installs the given AUR package name (yay-bin, paru-bin,
+# yay, or paru). Returns non-zero on failure rather than dying, so the
+# caller can decide whether to fall back rather than aborting the whole
+# script.
+_install_aur_helper_pkg() {
     local pkgname="$1"
     pkg_install base-devel git
 
-    local build_dir
-    build_dir=$(mktemp -d)
     local user
     user=$(target_user)
+    local user_home
+    user_home=$(target_home)
 
-    # Build must happen as a non-root user; makepkg refuses to run as root.
-    chown -R "$user:$user" "$build_dir"
+    # Build under the user's home directory, NOT /tmp via plain mktemp.
+    # /tmp is commonly a size-capped tmpfs (often a fraction of RAM) —
+    # confirmed for real during this project: a source build of paru
+    # failed with "Disk quota exceeded" partway through compiling large
+    # dependencies, because /tmp filled up. Building somewhere on the
+    # real disk avoids that entirely.
+    local build_root="${user_home}/.cache/system-optimizations-aur-build"
+    sudo -u "$user" mkdir -p "$build_root"
+    local build_dir
+    build_dir=$(sudo -u "$user" mktemp -d "${build_root}/build.XXXXXX")
+
     if ! sudo -u "$user" git clone --depth=1 "https://aur.archlinux.org/${pkgname}.git" "$build_dir/${pkgname}"; then
         log_warn "Failed to clone ${pkgname} from AUR"
         rm -rf "$build_dir"
