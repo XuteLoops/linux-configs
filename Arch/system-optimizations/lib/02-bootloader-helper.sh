@@ -241,4 +241,5 @@ ensure_limine_kernel_entries() {
     done
 
     [[ "$added" -eq 0 ]] && log_skip "No missing kernel entries to add"
+    return 0
 }
