@@ -66,7 +66,11 @@ set_pacman_architecture() {
         return 0
     fi
     local arch_tag="${MARCH_LEVEL//-/_}"   # x86-64-v3 -> x86_64_v3
-    set_kv "Architecture" "x86_64 ${arch_tag}" "$conf" " = "
+    # set_pacman_option (not set_kv) — same [options]-section risk as
+    # ParallelDownloads/CompressXZ/etc: if Architecture is still commented
+    # out (a valid fresh-install state), set_kv's fallback would append to
+    # EOF and risk landing under whatever repo section is last.
+    set_pacman_option "Architecture" "x86_64 ${arch_tag}" "$conf"
     log_success "Set Architecture = x86_64 ${arch_tag} in $conf (x86_64 first — required for correct \$arch mirrorlist substitution)"
 }
 

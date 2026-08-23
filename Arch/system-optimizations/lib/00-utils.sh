@@ -131,25 +131,17 @@ append_once() {
     printf '%s\n' "$line" >> "$file"
 }
 
-# Replaces a `key=value` style line in a config file, or appends it if the
-# key doesn't exist yet. Only matches uncommented keys.
-#
-# WARNING: only safe for genuinely single-line values. Do NOT use this on
-# files where the existing value might span multiple lines via backslash
-# continuation (e.g. stock /etc/makepkg.conf's default CFLAGS) — the sed
-# regex here only matches the first line, leaving orphaned continuation
-# lines behind and corrupting the file's shell syntax. Use
-# set_shell_assignment() instead for that case. (This bit us for real:
-# see 04-compiler-flags.sh's history.)
-set_kv() {
-    local key="$1" value="$2" file="$3" sep="${4:-=}"
-    backup_file "$file"
-    if grep -qE "^${key}${sep}" "$file" 2>/dev/null; then
-        sed -i "s|^${key}${sep}.*|${key}${sep}${value}|" "$file"
-    else
-        printf '%s%s%s\n' "$key" "$sep" "$value" >> "$file"
-    fi
-}
+# NOTE: a generic set_kv() (single-line key=value replace-or-append) used
+# to live here and has been deliberately removed. Its append-on-missing
+# fallback appended to the literal end of the file, which is unsafe for
+# any config with sections (pacman.conf, makepkg.conf) — a value could
+# land under the wrong section header, or after a multi-line value's
+# continuation lines, corrupting the file. This caused two real bugs in
+# this project. Use set_shell_assignment() for flat shell-style files
+# (makepkg.conf) or set_pacman_option() for pacman.conf's [options]
+# section. For any NEW config-editing helper: always locate the correct
+# structural insertion point (section header, anchor line) rather than
+# appending to end-of-file — never assume a flat, unsectioned file.
 
 # Sets a shell-style `KEY="value"` assignment in a config file that is
 # itself valid shell (e.g. makepkg.conf), correctly handling an existing
