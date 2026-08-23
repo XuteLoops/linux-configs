@@ -74,6 +74,54 @@ set_pacman_architecture() {
     log_success "Set Architecture = x86_64 ${arch_tag} in $conf (x86_64 first — required for correct \$arch mirrorlist substitution)"
 }
 
+# Verifies every ALHP repo section in pacman.conf uses the SAME
+# microarch tier. ALHP requires this — mixing tiers (e.g. core on v2,
+# extra on v3) means pacman builds an incoherent dependency graph across
+# repos, since a package from the v3 tier can carry different sonames/
+# version constraints than the v2 tier provides for the same base
+# library. Confirmed for real: this exact mismatch produced "nothing
+# provides bash/dbus/cairo/..." on a fresh package install, even though
+# `pacman -Syyu` (which only touches already-resolved packages) appeared
+# fine — the break only surfaces on new dependency resolution.
+#
+# This is a hard stop (die), not a warning: continuing to run the rest
+# of the script while pacman can't build a coherent dependency graph
+# risks every subsequent pkg_install/aur_install call behaving
+# unpredictably. Called directly from install.sh right after detection
+# — before ANY task runs, including aur-helper/reflector — since those
+# also install packages and could be affected too.
+#
+# Note: setup_alhp_repo() itself cannot structurally produce this
+# mismatch — it always writes core-${MARCH_LEVEL} and
+# extra-${MARCH_LEVEL} from the same variable in one pass, and skips
+# entirely on later runs without re-touching the file. This check exists
+# because that skip logic only verified ALHP was "configured at all",
+# never that it stayed internally consistent if something else touched
+# one section independently afterward.
+check_alhp_tier_consistency() {
+    local conf="/etc/pacman.conf"
+    [[ -f "$conf" ]] || return 0
+
+    local sections
+    sections=$(grep -oE '^\[(core|extra|multilib)-x86-64-v[0-9]\]' "$conf")
+    [[ -z "$sections" ]] && return 0
+
+    local tiers
+    tiers=$(echo "$sections" | grep -oE 'v[0-9]' | sort -u)
+    local tier_count
+    tier_count=$(echo "$tiers" | grep -c .)
+
+    if [[ "$tier_count" -gt 1 ]]; then
+        log_error "ALHP tier MISMATCH detected in $conf — this will break package installs."
+        log_error "Sections found:"
+        echo "$sections" | while read -r s; do log_error "  $s"; done
+        log_error "Every ALHP section must use the SAME tier. Fix options:"
+        log_error "  1. Standardize: check your CPU's max tier with '/lib/ld-linux-x86-64.so.2 --help | grep supported', then edit $conf so every core-x86-64-vN/extra-x86-64-vN section uses that same N, then 'sudo pacman -Syyu'."
+        log_error "  2. Or drop ALHP entirely: remove all core-x86-64-vN/extra-x86-64-vN sections, reinstall pacman from plain [core] to undo any ALHP-built version ('sudo pacman -S --overwrite \"*\" core/pacman'), then 'sudo pacman -Syyu'."
+        die "Refusing to continue with an inconsistent ALHP configuration — resolve manually, then re-run."
+    fi
+}
+
 setup_alhp_repo() {
     if [[ "$MARCH_LEVEL" == "x86-64" ]]; then
         log_warn "CPU only supports baseline x86-64 — ALHP has no repo for this tier, skipping."

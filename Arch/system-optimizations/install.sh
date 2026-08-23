@@ -81,6 +81,7 @@ done
 
 require_root
 run_detection   # populates CPU_VENDOR, MARCH_LEVEL, GPU_VENDORS, BOOTLOADER, ROOT_FS, INITRAMFS_STYLE
+check_alhp_tier_consistency   # hard stop if ALHP repos are internally inconsistent — before ANY task runs
 
 _in_array() {
     local needle="$1"; shift
