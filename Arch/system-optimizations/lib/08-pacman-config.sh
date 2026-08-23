@@ -13,21 +13,18 @@ configure_pacman_conf() {
     local conf="/etc/pacman.conf"
     backup_file "$conf"
 
-    uncomment_line "ParallelDownloads" "$conf"
     local pd_value=5
     if (( $(nproc) >= 8 )); then
         pd_value=10
     fi
-    set_kv "ParallelDownloads" "$pd_value" "$conf"
+    set_pacman_option "ParallelDownloads" "$pd_value" "$conf"
     log_success "ParallelDownloads = $pd_value (nproc=$(nproc))"
 
-    uncomment_line "CompressXZ" "$conf" 2>/dev/null || true
-    uncomment_line "CompressZst" "$conf" 2>/dev/null || true
-    grep -q '^CompressXZ' "$conf" || echo 'CompressXZ = /usr/bin/xz -T0 -c -z -' >> "$conf"
-    grep -q '^CompressZst' "$conf" || echo 'CompressZst = /usr/bin/zstd -T0 -c -z -q -' >> "$conf"
+    set_pacman_option "CompressXZ" "/usr/bin/xz -T0 -c -z -" "$conf"
+    set_pacman_option "CompressZst" "/usr/bin/zstd -T0 -c -z -q -" "$conf"
     log_success "CompressXZ / CompressZst set to use all threads (-T0)"
 
-    set_kv "DownloadUser" "alpm" "$conf"
+    set_pacman_option "DownloadUser" "alpm" "$conf"
     log_success "DownloadUser = alpm set"
 }
 

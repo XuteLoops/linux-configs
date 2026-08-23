@@ -185,6 +185,35 @@ set_shell_assignment() {
     mv "$tmpfile" "$file"
 }
 
+# Sets a `Key = value` directive specifically WITHIN pacman.conf's
+# [options] section — never appends to the end of the file. Required for
+# any [options]-only directive (ParallelDownloads, CompressXZ,
+# CompressZst, DownloadUser, etc.) because pacman.conf directives apply
+# to whatever section header they textually fall under. An earlier
+# version of this script appended missing directives with plain `>>`,
+# which landed them after whatever the LAST section in the file happened
+# to be (commonly [multilib]) — pacman then read them as invalid
+# directives for that repo instead of global options, producing "not
+# recognized" warnings. This bit us for real; see the git history around
+# configure_pacman_conf() in 08-pacman-config.sh.
+#
+# If the key already exists anywhere in the file, updates it in place
+# (handles both "already correctly under [options]" and "was previously
+# misplaced by the old buggy behavior" — either way the value gets
+# fixed, though a misplaced line won't be relocated on its own; run this
+# against a clean/restored pacman.conf if one was already corrupted).
+set_pacman_option() {
+    local key="$1" value="$2" conf="${3:-/etc/pacman.conf}"
+    backup_file "$conf"
+
+    if grep -qE "^${key}[[:space:]]*=" "$conf"; then
+        sed -i "s|^${key}[[:space:]]*=.*|${key} = ${value}|" "$conf"
+    else
+        grep -qE '^\[options\]' "$conf" || die "$conf has no [options] section — cannot safely insert ${key}"
+        sed -i "/^\[options\]/a ${key} = ${value}" "$conf"
+    fi
+}
+
 # Uncomments a line matching a pattern (e.g. "#ParallelDownloads" -> "ParallelDownloads")
 uncomment_line() {
     local pattern="$1" file="$2"
