@@ -4,14 +4,12 @@
 # Included: ParallelDownloads (conditional on thread count), DownloadUser=alpm,
 #   pacman-contrib (pacdiff + paccache), paccache hook (default -r only, NOT
 #   -ruk0 — keeps last 3 versions of uninstalled packages too, for rollback
-#   safety), arch-manwarn-bin, pacman database backup, installed-package
-#   list snapshot.
+#   safety), arch-manwarn-bin, arch-update, pacman database backup,
+#   installed-package list snapshot.
 # Excluded: namcap, lostfiles (contingent on unresolved systemd live-reload
 #   issue), booster (kept out of the distributable script by design),
 #   CompressXZ/CompressZst (removed by request — caused more problems on
-#   the target system than the faster package-cache compression was worth),
-#   arch-update (removed by request, to isolate whether it was a blocking
-#   failure point separate from the /etc/makepkg.conf issue).
+#   the target system than the faster package-cache compression was worth).
 
 configure_pacman_conf() {
     local conf="/etc/pacman.conf"
@@ -66,8 +64,8 @@ EOF
     fi
 }
 
-install_arch_manwarn() {
-    aur_install arch-manwarn-bin
+install_arch_manwarn_and_update() {
+    aur_install arch-manwarn-bin arch-update
 }
 
 setup_pacman_db_backup() {
