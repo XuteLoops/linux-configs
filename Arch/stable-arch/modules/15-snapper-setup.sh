@@ -26,12 +26,18 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 ensure_pkg_installed() {
-    local pkg="$1"
-    if pacman -Qi "$pkg" &>/dev/null; then
-        log "Already installed: $pkg"
-    else
-        log "Installing: $pkg"
-        pacman -S --needed --noconfirm "$pkg"
+    local to_install=()
+    local pkg
+    for pkg in "$@"; do
+        if pacman -Qi "$pkg" &>/dev/null; then
+            log "Already installed: $pkg"
+        else
+            to_install+=("$pkg")
+        fi
+    done
+    if [ "${#to_install[@]}" -gt 0 ]; then
+        log "Installing: ${to_install[*]}"
+        pacman -S --needed --noconfirm "${to_install[@]}"
     fi
 }
 
@@ -41,8 +47,7 @@ if ! findmnt -no FSTYPE / | grep -qx btrfs; then
 fi
 
 log "Installing snapper and snap-pac..."
-ensure_pkg_installed snapper
-ensure_pkg_installed snap-pac
+ensure_pkg_installed snapper snap-pac
 
 if [ -f /etc/snapper/configs/root ]; then
     log "snapper 'root' config already exists, skipping create-config"

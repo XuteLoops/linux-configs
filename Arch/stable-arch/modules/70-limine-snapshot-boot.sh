@@ -50,28 +50,110 @@ if [ -z "$BUILD_USER" ] || [ "$BUILD_USER" = "root" ]; then
     exit 1
 fi
 
+TARGET_HOME=$(getent passwd "$BUILD_USER" | cut -d: -f6)
+if [ -z "$TARGET_HOME" ] || [ ! -d "$TARGET_HOME" ]; then
+    echo "Could not resolve a home directory for user '$BUILD_USER'." >&2
+    exit 1
+fi
+
 ensure_pkg_installed() {
-    local pkg="$1"
-    if pacman -Qi "$pkg" &>/dev/null; then
-        log "Already installed: $pkg"
-    else
-        log "Installing: $pkg"
-        pacman -S --needed --noconfirm "$pkg"
+    local to_install=()
+    local pkg
+    for pkg in "$@"; do
+        if pacman -Qi "$pkg" &>/dev/null; then
+            log "Already installed: $pkg"
+        else
+            to_install+=("$pkg")
+        fi
+    done
+    if [ "${#to_install[@]}" -gt 0 ]; then
+        log "Installing: ${to_install[*]}"
+        pacman -S --needed --noconfirm "${to_install[@]}"
     fi
 }
 
-ensure_aur_helper() {
-    if command -v paru &>/dev/null || command -v yay &>/dev/null; then
-        return
+_aur_helper_working() {
+    local bin="$1"
+    command -v "$bin" &>/dev/null && "$bin" --version &>/dev/null
+}
+
+_aur_helper_remove_if_installed() {
+    local pkgname="$1"
+    if pacman -Qi "$pkgname" &>/dev/null; then
+        log "Removing non-functional $pkgname..."
+        pacman -R --noconfirm "$pkgname" \
+            || warn "Failed to remove $pkgname — may cause a conflict on the next install attempt."
     fi
-    log "No AUR helper found — bootstrapping paru..."
-    ensure_pkg_installed base-devel
-    ensure_pkg_installed git
-    local tmpdir
-    tmpdir=$(sudo -u "$BUILD_USER" mktemp -d)
-    sudo -u "$BUILD_USER" git clone --quiet "https://aur.archlinux.org/paru.git" "$tmpdir"
-    (cd "$tmpdir" && sudo -u "$BUILD_USER" makepkg -si --noconfirm)
-    rm -rf "$tmpdir"
+}
+
+_aur_helper_install_pkg() {
+    local pkgname="$1"
+    ensure_pkg_installed base-devel git
+
+    local build_root="${TARGET_HOME}/.cache/pipeline-aur-build"
+    sudo -u "$BUILD_USER" mkdir -p "$build_root"
+    local build_dir
+    build_dir=$(sudo -u "$BUILD_USER" mktemp -d "${build_root}/build.XXXXXX")
+
+    if ! sudo -u "$BUILD_USER" git clone --quiet --depth=1 "https://aur.archlinux.org/${pkgname}.git" "$build_dir/${pkgname}"; then
+        warn "Failed to clone $pkgname from AUR"
+        rm -rf "$build_dir"
+        return 1
+    fi
+
+    if ! (cd "$build_dir/${pkgname}" && sudo -u "$BUILD_USER" makepkg -si --noconfirm); then
+        warn "Failed to build/install $pkgname"
+        rm -rf "$build_dir"
+        return 1
+    fi
+
+    rm -rf "$build_dir"
+}
+
+# yay preferred over paru throughout (paru has caused real problems in
+# practice); prebuilt tried before source; "working" verified by
+# actually running --version; builds happen under the user's home
+# directory, not /tmp.
+ensure_aur_helper() {
+    if _aur_helper_working yay; then
+        log "AUR helper already present and working: yay"
+        return 0
+    fi
+    if _aur_helper_working paru; then
+        log "AUR helper already present and working: paru"
+        return 0
+    fi
+
+    log "Trying yay-bin (prebuilt, fast) first..."
+    if _aur_helper_install_pkg "yay-bin" && _aur_helper_working yay; then
+        log "Installed AUR helper: yay (prebuilt binary)"
+        return 0
+    fi
+    warn "yay-bin unavailable or broken — trying paru-bin instead."
+    _aur_helper_remove_if_installed "yay-bin"
+
+    if _aur_helper_install_pkg "paru-bin" && _aur_helper_working paru; then
+        log "Installed AUR helper: paru (prebuilt binary)"
+        return 0
+    fi
+    warn "paru-bin also unavailable or broken — building yay from source."
+    _aur_helper_remove_if_installed "paru-bin"
+
+    if _aur_helper_install_pkg "yay" && _aur_helper_working yay; then
+        log "Installed AUR helper: yay (built from source)"
+        return 0
+    fi
+    warn "Building yay from source also failed — falling back to paru from source."
+
+    if ! _aur_helper_install_pkg "paru"; then
+        echo "All AUR helper install options exhausted — cannot proceed." >&2
+        exit 1
+    fi
+    if ! _aur_helper_working paru; then
+        echo "paru was built from source but still fails to run — check the build output above." >&2
+        exit 1
+    fi
+    log "Installed AUR helper: paru (built from source, last resort)"
 }
 
 install_pkg_prefer_binary_repo() {
@@ -92,7 +174,7 @@ install_pkg_prefer_binary_repo() {
 
     log "Not found in any configured repo — building from AUR: $pkg"
     local helper
-    helper=$(command -v paru || command -v yay)
+    helper=$(command -v yay || command -v paru)
     sudo -u "$BUILD_USER" "$helper" -S --needed --noconfirm "$pkg"
 }
 

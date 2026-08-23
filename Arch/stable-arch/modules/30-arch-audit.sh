@@ -29,12 +29,18 @@ fi
 HOOKS_DIR=/etc/pacman.d/hooks
 
 ensure_pkg_installed() {
-    local pkg="$1"
-    if pacman -Qi "$pkg" &>/dev/null; then
-        log "Already installed: $pkg"
-    else
-        log "Installing: $pkg"
-        pacman -S --needed --noconfirm "$pkg"
+    local to_install=()
+    local pkg
+    for pkg in "$@"; do
+        if pacman -Qi "$pkg" &>/dev/null; then
+            log "Already installed: $pkg"
+        else
+            to_install+=("$pkg")
+        fi
+    done
+    if [ "${#to_install[@]}" -gt 0 ]; then
+        log "Installing: ${to_install[*]}"
+        pacman -S --needed --noconfirm "${to_install[@]}"
     fi
 }
 
@@ -64,9 +70,7 @@ deploy_file() {
 }
 
 log "Installing arch-audit and dependencies..."
-ensure_pkg_installed arch-audit
-ensure_pkg_installed curl
-ensure_pkg_installed openssl
+ensure_pkg_installed arch-audit curl openssl
 
 # Hook parsing (and the NetworkAccess key) lives in libalpm, not the
 # pacman frontend binary itself — pacman is just a thin CLI wrapper
