@@ -174,6 +174,19 @@ set_shell_assignment() {
     ' "$file" > "$tmpfile"
 
     printf '%s="%s"\n' "$key" "$value" >> "$tmpfile"
+
+    # mktemp creates files at mode 600 by default (security default for
+    # temp files) — mv-ing that over $file would silently downgrade its
+    # permissions from whatever they were (e.g. 644, world-readable) to
+    # 600 (root-only). This is a real bug that happened for real:
+    # /etc/makepkg.conf needs to stay world-readable since makepkg
+    # refuses to run as root and must be run as a regular user, who then
+    # can't read a root-only file — some tools report that specific
+    # failure ambiguously as "file not found" rather than "permission
+    # denied", which is exactly what happened here. Explicitly match the
+    # original file's permissions and ownership before replacing it.
+    chmod --reference="$file" "$tmpfile"
+    chown --reference="$file" "$tmpfile"
     mv "$tmpfile" "$file"
 }
 
