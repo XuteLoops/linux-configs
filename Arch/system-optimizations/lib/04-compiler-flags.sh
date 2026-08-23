@@ -66,9 +66,23 @@ setup_alhp_repo() {
 
     pacman-key --recv-keys 3056513887B78AEB --keyserver keyserver.ubuntu.com \
         || log_warn "Could not fetch ALHP signing key from keyserver — you may need to add it manually."
-    pacman-key --lsign-key 3056513887B78AEB 2>/dev/null
+    # Guarded (was previously a bare, unguarded command — same silent-kill
+    # risk under set -e as the bare VAR=$(...) pattern fixed in 01-detect.sh):
+    # if the key wasn't fetched above, or lsign fails for any reason, warn
+    # and keep going rather than dying here.
+    pacman-key --lsign-key 3056513887B78AEB 2>/dev/null \
+        || log_warn "Could not locally sign the ALHP key — you may need to run 'pacman-key --lsign-key 3056513887B78AEB' manually."
 
-    pkg_install alhp-keyring alhp-mirrorlist 2>/dev/null || true
+    # alhp-keyring/alhp-mirrorlist are AUR-only packages (confirmed on
+    # ALHP's own README) — must go through the AUR helper, not pkg_install
+    # (plain pacman -S can never find them, they don't exist in any
+    # official repo). Uses the non-fatal aur_install_optional(): if this
+    # fails for any reason, ALHP setup is skipped but the rest of the
+    # script continues rather than the whole run dying.
+    if ! aur_install_optional alhp-keyring alhp-mirrorlist; then
+        log_warn "Skipping ALHP repo setup (alhp-keyring/alhp-mirrorlist install failed)."
+        return 0
+    fi
 
     backup_file /etc/pacman.conf
 

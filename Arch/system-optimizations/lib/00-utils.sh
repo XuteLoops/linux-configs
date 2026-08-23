@@ -76,6 +76,38 @@ aur_install() {
     fi
 }
 
+# Best-effort AUR install for genuinely OPTIONAL packages: logs a warning
+# and returns non-zero on failure instead of calling die()/exit like
+# aur_install() does. Use this whenever failure should be skipped
+# gracefully rather than ending the whole script — e.g. ALHP's keyring
+# packages, where the rest of the run should continue fine without them.
+# (A plain `|| true` around aur_install()/pkg_install() does NOT achieve
+# this: those call die() -> exit on failure, and no enclosing `||` can
+# catch a process that has already exited.)
+aur_install_optional() {
+    local pkgs=() p
+    for p in "$@"; do
+        if is_pkg_installed "$p"; then
+            log_skip "$p already installed"
+        else
+            pkgs+=("$p")
+        fi
+    done
+    if ((${#pkgs[@]})); then
+        if [[ -z "${AUR_HELPER:-}" ]]; then
+            log_warn "No AUR helper configured — skipping optional install: ${pkgs[*]}"
+            return 1
+        fi
+        log_info "Installing (AUR, optional): ${pkgs[*]}"
+        if sudo -u "$(target_user)" "$AUR_HELPER" -S --needed --noconfirm "${pkgs[@]}"; then
+            log_success "Installed (AUR): ${pkgs[*]}"
+        else
+            log_warn "Failed to install (optional): ${pkgs[*]} — continuing without it."
+            return 1
+        fi
+    fi
+}
+
 enable_service() {
     local svc="$1"
     systemctl enable --now "$svc" \
