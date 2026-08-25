@@ -239,7 +239,7 @@ TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 # verified byte-correct, complete solv file, cascading through nearly
 # every installed package on every transaction. paccheck avoids the
 # issue entirely by never converting to solv format.
-PACCHECK_OUTPUT="$(paccheck --dependencies --quiet 2>&1)"
+PACCHECK_OUTPUT="$(paccheck --depends --quiet 2>&1)"
 echo "$PACCHECK_OUTPUT" | tee "$LOGDIR/paccheck-$TIMESTAMP.log"
 if [ -n "$PACCHECK_OUTPUT" ]; then
         logger -t verify-transaction "FAILED: paccheck found unsatisfied dependencies"
