@@ -23,7 +23,6 @@ directly tested.
 Arch/
 └── stable-arch/
     ├── README.md
-    ├── HANDOFF.md
     ├── install-all.sh          # convenience wrapper: runs every module in order
     └── modules/
         ├── 00-aur-helpers.sh
@@ -80,10 +79,10 @@ setting them up manually first:
   `70-limine-snapshot-boot.sh` wires snapper snapshots into the Limine
   boot menu. GRUB is explicitly detected and skipped with a clear
   message, not silently ignored — the equivalent `grub-btrfs` integration
-  is a different package/mechanism that hasn't been built yet (see
-  `HANDOFF.md`). This module also stops short of auto-editing
-  `limine.conf`'s actual boot entries — see the module's own comments
-  and the "Modules" table below for exactly what it does and doesn't do.
+  is a different package/mechanism that hasn't been built yet.
+  This module also stops short of auto-editing `limine.conf`'s actual
+  boot entries — see the module's own comments and the "Modules"
+  table below for exactly what it does and doesn't do.
 - **`base-devel` and `git`.** Required for the AUR helper bootstrap
   (building `paru` from source). Some ISOs include these by default;
   others don't. Every module that needs an AUR package installs these
@@ -224,8 +223,7 @@ of which Arch-based distro it's running on:
   broken linkage, unsatisfied dependencies, and packages needing a rebuild
   can all slip through silently. This pipeline checks for those explicitly,
   every time — and has already caught and correctly rolled back real,
-  transient dependency breakage in production use (Arch mirror-sync
-  timing gaps, not a bug — see `HANDOFF.md`).
+  transient dependency breakage in production use.
 - **Automatic recovery, not just automatic snapshots.** Snapper alone gives
   you the ability to _manually_ roll back if you notice something's wrong.
   This pipeline notices for you and rolls back on its own, closing the gap
