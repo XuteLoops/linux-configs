@@ -17,10 +17,13 @@
 # Package install strategy: prefers a pre-built binary from any
 # configured repo over building from AUR. limine-mkinitcpio-hook and
 # limine-snapper-sync have a confirmed, unresolved Gradle/GraalVM build
-# issue on vanilla Arch — see the comment above the install calls below
-# for the full detail and manual workaround options. This script does
-# NOT automatically add third-party repos (an earlier attempt at that
-# was tried and reverted — see the same comment for why).
+# issue on vanilla Arch, so this module adds chaotic-aur (a well-known
+# prebuilt-binary AUR mirror) to install prebuilt versions of just these
+# two packages, then immediately restricts that repo to Sync+Upgrade
+# only — no new installs from it beyond these two. See the comment
+# above ensure_chaotic_aur() and install_pkg_prefer_binary_repo() calls
+# below for the full detail, including why this differs from an earlier
+# CachyOS-repo-auto-add attempt that was tried and reverted.
 #
 # limine.conf marker handling: if the //Snapshots injection marker isn't
 # already present, this module inserts one automatically — finds the
@@ -164,8 +167,9 @@ install_pkg_prefer_binary_repo() {
     fi
 
     # Prefer a pre-built binary from any currently-configured repo over
-    # building from AUR (covers CachyOS's repo if you've added it
-    # yourself, or any future official repo that picks this package up).
+    # building from AUR (covers chaotic-aur, if ensure_chaotic_aur has
+    # added it below, or any future official repo that picks this
+    # package up).
     if pacman -Si "$pkg" &>/dev/null; then
         log "Found $pkg in a configured repo — installing prebuilt binary (skipping AUR build)..."
         pacman -S --needed --noconfirm "$pkg"
@@ -176,6 +180,88 @@ install_pkg_prefer_binary_repo() {
     local helper
     helper=$(command -v yay || command -v paru)
     sudo -u "$BUILD_USER" "$helper" -S --needed --noconfirm "$pkg"
+}
+
+# --- chaotic-aur: precompiled fallback for limine-mkinitcpio-hook /
+# limine-snapper-sync, both permanently blocked building from AUR by a
+# confirmed Gradle/GraalVM version incompatibility (see the comment
+# above the install_pkg_prefer_binary_repo calls below). chaotic-aur
+# ships prebuilt binaries for these, sidestepping the Gradle build
+# entirely — unlike the earlier CachyOS-repo-auto-add attempt, this is
+# a well-known, widely-used binary AUR mirror, not a distro's own
+# pacman fork, and its installer is deterministic (key import + two
+# package installs), not an interactive third-party script piped
+# through non-interactively (which is what caused the earlier CachyOS
+# attempt to fail silently). Deliberately scoped to ONLY these two
+# packages — see restrict_chaotic_aur_usage below, which locks the repo
+# down to Sync+Upgrade (no new installs) once they're in place, so this
+# doesn't become a general-purpose AUR-binary shortcut for the rest of
+# the system.
+CHAOTIC_KEY=3056513887B78AEB
+
+ensure_chaotic_aur() {
+    if grep -qE '^\[chaotic-aur\]' /etc/pacman.conf; then
+        log "chaotic-aur already configured in /etc/pacman.conf, skipping setup."
+        return
+    fi
+
+    log "Setting up chaotic-aur (needed for limine-mkinitcpio-hook / limine-snapper-sync prebuilt binaries)..."
+
+    if ! pacman-key --finger "$CHAOTIC_KEY" &>/dev/null; then
+        log "Importing chaotic-aur signing key..."
+        pacman-key --recv-key "$CHAOTIC_KEY" --keyserver keyserver.ubuntu.com
+        pacman-key --lsign-key "$CHAOTIC_KEY"
+    else
+        log "chaotic-aur signing key already imported."
+    fi
+
+    if ! pacman -Qi chaotic-keyring &>/dev/null; then
+        log "Installing chaotic-keyring..."
+        pacman -U --noconfirm 'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-keyring.pkg.tar.zst'
+    fi
+    if ! pacman -Qi chaotic-mirrorlist &>/dev/null; then
+        log "Installing chaotic-mirrorlist..."
+        pacman -U --noconfirm 'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-mirrorlist.pkg.tar.zst'
+    fi
+
+    log "Adding [chaotic-aur] to /etc/pacman.conf (full usage, temporarily — restricted after install)..."
+    cp -a /etc/pacman.conf "/etc/pacman.conf.$(date +%Y%m%d-%H%M%S).bak"
+    {
+        echo ""
+        echo "[chaotic-aur]"
+        echo "Include = /etc/pacman.d/chaotic-mirrorlist"
+    } >> /etc/pacman.conf
+
+    log "Syncing package databases..."
+    pacman -Syy
+}
+
+# Locks [chaotic-aur] down to Sync+Upgrade only (no Install/Search),
+# once both limine packages are confirmed actually installed. This
+# means the repo's db still refreshes and the two packages installed
+# from it still get upgrades via normal -Syu, but nothing new can be
+# pulled from chaotic-aur afterward. Only narrows once — if the section
+# already has a Usage line, leaves it alone rather than overwriting a
+# choice made elsewhere. If either package isn't actually installed yet
+# (e.g. this run failed partway), leaves the repo at full access so a
+# retry can still use it.
+restrict_chaotic_aur_usage() {
+    if ! grep -qE '^\[chaotic-aur\]' /etc/pacman.conf; then
+        return
+    fi
+    if ! pacman -Qi limine-mkinitcpio-hook &>/dev/null || ! pacman -Qi limine-snapper-sync &>/dev/null; then
+        warn "Not restricting [chaotic-aur] usage — one or both limine packages aren't installed yet."
+        return
+    fi
+    if awk '/^\[chaotic-aur\]/{f=1;next} /^\[/{f=0} f && /^Usage[[:space:]]*=/{print; exit}' /etc/pacman.conf | grep -q .; then
+        log "[chaotic-aur] already has a Usage restriction set, leaving it as-is."
+        return
+    fi
+
+    log "Both limine packages confirmed installed — restricting [chaotic-aur] to Sync+Upgrade only..."
+    cp -a /etc/pacman.conf "/etc/pacman.conf.$(date +%Y%m%d-%H%M%S).bak"
+    sed -i '/^\[chaotic-aur\]/a Usage = Sync Upgrade' /etc/pacman.conf
+    log "[chaotic-aur] restricted — its db will still refresh and installed packages will still upgrade, but no new packages can be installed from it."
 }
 
 deploy_file() {
@@ -235,49 +321,27 @@ if pacman -Qi limine-entry-tool &>/dev/null && ! pacman -Qi limine-mkinitcpio-ho
     pacman -Rdd --noconfirm limine-entry-tool
 fi
 
-install_pkg_prefer_binary_repo limine-mkinitcpio-hook
-# NOTE: limine-mkinitcpio-hook builds a native Java component via Gradle +
-# GraalVM (confirmed on its AUR comments page — this is intentional
-# upstream, not a bug). `gradle` is a genuine (make) dependency declared
-# in the package itself, so removing it before rebuilding does nothing —
-# paru/makepkg reinstalls it automatically regardless.
-#
-# CONFIRMED CURRENT BLOCKER on vanilla Arch: building from AUR fails with
+# NOTE: limine-mkinitcpio-hook and limine-snapper-sync both build a
+# native Java component via Gradle + GraalVM when built from AUR
+# (confirmed on their AUR comments pages — intentional upstream, not a
+# bug). CONFIRMED BLOCKER on vanilla Arch: building from AUR fails with
 # "Cannot find module 'gradle-public-api-legacy' in distribution
 # directory '/usr/share/java/gradle'" — a genuine version mismatch
-# between Arch's currently-packaged gradle and what this PKGBUILD's
-# build script expects. Confirmed NOT a local cache/daemon issue (ruled
-# out via a clean ~/.gradle + paru clone-cache wipe, fresh Gradle daemon
-# each time). Confirmed on BOTH the stable and -git package variants.
-# Checked the AUR comments page directly for this exact error string:
-# nothing found as of this testing.
+# between Arch's currently-packaged gradle and what these PKGBUILDs'
+# build scripts expect. Confirmed NOT a local cache/daemon issue.
+# Confirmed on both stable and -git variants of both packages.
 #
-# An automatic CachyOS-repo fallback was tried here and reverted — their
-# cachyos-repo.sh installer silently failed to add a working repo section
-# when run non-interactively inside this script (no [cachyos] section
-# ever appeared in pacman.conf despite it printing "Done installing
-# CachyOS repo"), while still installing CachyOS's patched pacman fork as
-# a side effect — a real system change with no compensating benefit, and
-# a genuinely confusing state to end up in. Do NOT re-add automatic repo
-# manipulation here without addressing why that installer failed silently
-# in a non-interactive context first.
-#
-# This is NOT fixable from inside this script. If you hit this:
-#   1. Check this package's AUR comments page directly for the current
-#      known workaround (blocked here by AUR's bot-protection layer, but
-#      accessible in a normal browser): https://aur.archlinux.org/packages/limine-mkinitcpio-hook
-#   2. If you want to try CachyOS's repo (same source/version, pre-built,
-#      sidesteps Gradle entirely), run their installer yourself,
-#      interactively, and watch its actual output — do not pipe it
-#      through a script: https://github.com/CachyOS/cachyos-repo-add-script
-#      Be aware it installs a patched pacman fork as a side effect
-#      (CachyOS's own docs note this may cause compatibility warnings
-#      with standard Arch workflows).
-#   3. As a last resort: downgrade `gradle` via the Arch Linux Archive
-#      (https://archive.archlinux.org/packages/g/gradle/) to a version
-#      compatible with this PKGBUILD, and pin it with
-#      `IgnorePkg = gradle` in /etc/pacman.conf.
+# An earlier automatic CachyOS-repo fallback was tried and reverted —
+# their installer silently failed to add a working repo section when
+# run non-interactively, while still installing CachyOS's patched
+# pacman fork as a side effect. chaotic-aur (below) avoids that failure
+# mode: it's a deterministic key-import + package-install sequence, not
+# an interactive third-party installer script piped through
+# non-interactively, and it doesn't touch pacman itself.
+ensure_chaotic_aur
+install_pkg_prefer_binary_repo limine-mkinitcpio-hook
 install_pkg_prefer_binary_repo limine-snapper-sync
+restrict_chaotic_aur_usage
 
 # --- Add the overlay hook to mkinitcpio.conf ---
 # limine-mkinitcpio-hook provides two overlay hook variants: btrfs-overlayfs
