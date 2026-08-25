@@ -29,7 +29,6 @@ MODULES=(
     10-systemd-inhibit.sh
     15-snapper-setup.sh
     20-verify-transaction.sh
-    30-arch-audit.sh
     40-reboot-required.sh
     50-paccache.sh
     60-community-hooks.sh
