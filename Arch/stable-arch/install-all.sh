@@ -32,7 +32,6 @@ MODULES=(
     40-reboot-required.sh
     50-paccache.sh
     60-community-hooks.sh
-    70-limine-snapshot-boot.sh
 )
 
 LOCAL_MODE=0
