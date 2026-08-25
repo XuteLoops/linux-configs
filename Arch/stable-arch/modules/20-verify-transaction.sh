@@ -3,11 +3,31 @@
 # 20-verify-transaction.sh
 #
 # Standalone module: the core safety gate. After every pacman transaction,
-# runs installcheck (dependency satisfiability) and checkrebuild (broken
-# linkage / stale interpreter deps). On failure, automatically rolls back
-# to the most recent pacback snapshot via a detached background process.
+# runs paccheck (dependency satisfiability, checked directly against the
+# live pacman database) and checkrebuild (broken linkage / stale
+# interpreter deps). On failure, automatically rolls back to the most
+# recent pacback snapshot via a detached background process.
 #
-# Installs: libsolv, rebuild-detector (official repos), pacback (AUR).
+# Dependency check history: this originally used archrepo2solv (libsolv)
+# to convert /var/lib/pacman/local into a .solv file, then ran libsolv's
+# installcheck against it. That approach was dropped after a confirmed,
+# reproducible failure: installcheck does not correctly resolve Arch's
+# "any" architecture packages (filesystem, licenses, and others) even
+# against a verified byte-correct, complete solv file — every package
+# with arch:any was treated as unsatisfiable, which cascaded through
+# glibc (which requires filesystem) into nearly the entire system on
+# every single transaction. Confirmed directly: dumped and manually
+# inspected the exact solv file archrepo2solv produced during a real
+# failing transaction (all expected solvables present, correct
+# requires/provides throughout), then ran installcheck against that
+# exact saved file by hand, outside any hook — it failed identically,
+# proving the bug was in installcheck's own dependency resolution, not
+# in this script, the hook execution environment, or file generation.
+# paccheck (from pacutils, already a pacback dependency) checks
+# satisfiability directly against the live libalpm database, so it
+# never goes through solv format at all and isn't exposed to this bug.
+#
+# Installs: pacutils, rebuild-detector (official repos), pacback (AUR).
 # If neither yay nor paru is already installed, bootstraps paru
 # automatically so this module works standalone.
 #
@@ -185,7 +205,7 @@ deploy_file() {
 }
 
 log "Installing official-repo dependencies..."
-ensure_pkg_installed libsolv rebuild-detector
+ensure_pkg_installed pacutils rebuild-detector
 
 log "Ensuring an AUR helper is available..."
 ensure_aur_helper
@@ -209,16 +229,22 @@ LOGDIR=/var/log/pacman-verify
 mkdir -p "$LOGDIR"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 
-# --- Check 1: installcheck (dependency graph satisfiability) ---
-SOLVFILE=$(mktemp /tmp/local-XXXXXX.solv)
-archrepo2solv -l /var/lib/pacman/local > "$SOLVFILE"
-INSTALLCHECK_OUTPUT="$(installcheck x86_64 "$SOLVFILE" 2>&1)"
-echo "$INSTALLCHECK_OUTPUT" | tee "$LOGDIR/installcheck-$TIMESTAMP.log"
-if [ -n "$INSTALLCHECK_OUTPUT" ]; then
-        logger -t verify-transaction "FAILED: installcheck found unsatisfied dependencies"
+# --- Check 1: dependency satisfiability, via paccheck (pacutils) ---
+# Checks directly against the live pacman/libalpm database — no solv
+# conversion step. See the comment block at the top of the module
+# script (20-verify-transaction.sh) for why this replaced
+# archrepo2solv + libsolv's installcheck: that combination was
+# confirmed, directly and reproducibly, to fail on Arch's "any"
+# architecture packages (filesystem, licenses, etc.) even when fed a
+# verified byte-correct, complete solv file, cascading through nearly
+# every installed package on every transaction. paccheck avoids the
+# issue entirely by never converting to solv format.
+PACCHECK_OUTPUT="$(paccheck --dependencies --quiet 2>&1)"
+echo "$PACCHECK_OUTPUT" | tee "$LOGDIR/paccheck-$TIMESTAMP.log"
+if [ -n "$PACCHECK_OUTPUT" ]; then
+        logger -t verify-transaction "FAILED: paccheck found unsatisfied dependencies"
         FAILED=1
 fi
-rm -f "$SOLVFILE"
 
 # --- Check 2: checkrebuild (broken linkage / stale interpreter deps) ---
 CHECKREBUILD_OUTPUT="$(checkrebuild 2>&1)"
@@ -259,7 +285,7 @@ Type = Package
 Target = *
 
 [Action]
-Description = Verifying Transaction (installcheck + checkrebuild)...
+Description = Verifying Transaction (paccheck + checkrebuild)...
 When = PostTransaction
 Exec = /etc/pacman.d/hooks/scripts/verify-transaction.sh
 EOF
