@@ -112,8 +112,8 @@ call directly:
 - **snapper** and **snap-pac** — BTRFS snapshotting, installed and
   configured automatically by `15-snapper-setup.sh`, triggered
   automatically around every pacman transaction thereafter
-- **libsolv** (`installcheck`, `archrepo2solv`) — dependency
-  satisfiability checking
+- **pacutils** (`paccheck`) — dependency satisfiability checking,
+  against the live pacman database directly
 - **rebuild-detector** (`checkrebuild`) — broken-linkage /
   stale-dependency checking
 - **arch-audit** — CVE scanning against installed packages
@@ -136,7 +136,7 @@ call directly:
 | `00-aur-helpers.sh`          | `paru` (only if neither `yay` nor `paru` already present)                                                                                                               | Ensures an AUR helper is available. Optional — other modules bootstrap this themselves if it hasn't run.                                                                                                                                                                                                                                                                                                                                         |
 | `10-systemd-inhibit.sh`      | — (no packages)                                                                                                                                                         | Deploys `PreTransaction`/`PostTransaction` hooks that hold a shutdown/sleep inhibitor lock for the duration of every transaction.                                                                                                                                                                                                                                                                                                                |
 | `15-snapper-setup.sh`        | `snapper`, `snap-pac`                                                                                                                                                   | Creates the snapper `root` config against an existing BTRFS root subvolume, registers it in `/etc/conf.d/snapper`, and enables the timeline/cleanup timers. Foundation for pacback and Limine snapshot-boot integration.                                                                                                                                                                                                                         |
-| `20-verify-transaction.sh`   | `libsolv`, `rebuild-detector`, `pacback` (AUR)                                                                                                                          | **The core gate.** Runs `installcheck` + `checkrebuild` after every transaction; on failure, automatically rolls back to the latest pacback snapshot via a detached background process.                                                                                                                                                                                                                                                          |
+| `20-verify-transaction.sh`   | `pacutils`, `rebuild-detector`, `pacback` (AUR)                                                                                                                         | **The core gate.** Runs `paccheck` + `checkrebuild` after every transaction; on failure, automatically rolls back to the latest pacback snapshot via a detached background process.                                                                                                                                                                                                                                                              |
 | `30-arch-audit.sh`           | `arch-audit`, `curl`, `openssl`                                                                                                                                         | Informational-only CVE scan, deliberately outside the pass/fail gate. Detects at runtime (not by distro assumption) whether the local pacman build supports hook network sandboxing.                                                                                                                                                                                                                                                             |
 | `40-reboot-required.sh`      | — (no packages)                                                                                                                                                         | Detects kernel upgrades and systemd (PID 1) upgrades that need a reboot, not just a service restart. Writes `/run/reboot-required`, prints an immediate banner during the transaction, and wires a persistent reminder into bash and zsh.                                                                                                                                                                                                        |
 | `50-paccache.sh`             | `pacman-contrib`                                                                                                                                                        | Enables `paccache.timer` for periodic package cache pruning.                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -179,6 +179,37 @@ chain). No safe exclude-list fix was found. The `40-reboot-required.sh`
 module is the intended alternative for this class of change: flag that a
 restart is needed and let a human choose when, rather than attempt a
 live restart of something that may not be safely restartable at all.
+
+## Fixed: dependency check uses `paccheck`, not `installcheck`
+
+`20-verify-transaction.sh`'s dependency-satisfiability check originally
+used `libsolv`'s `archrepo2solv` + `installcheck` — converting
+`/var/lib/pacman/local` into a `.solv` file, then checking that solv file
+for unsatisfied dependencies. This was replaced after a confirmed,
+reproducible failure: `installcheck` does not correctly resolve Arch's
+`any` architecture packages (`filesystem`, `licenses`, and others), even
+against a verified byte-correct, complete solv file. Since `glibc`
+requires `filesystem`, and `filesystem` is `arch: any`, this cascaded
+into nearly every installed package being reported as unsatisfiable on
+every single transaction — a false-positive rollback trigger, not a real
+system problem.
+
+This was isolated directly rather than assumed: the exact `.solv` file
+produced during a real failing transaction was saved and manually
+inspected (every expected package present, correct `requires`/`provides`
+throughout, matching known-good output from a previous working install),
+then `installcheck` was run against that exact saved file by hand,
+completely outside the hook — it failed identically. That confirmed the
+bug was in `installcheck`'s own dependency resolution, not in this
+script, the hook execution environment, or anything specific to one
+system.
+
+The check now uses `paccheck --depends --quiet` (from `pacutils`,
+already a `pacback` dependency) instead. `paccheck` checks satisfiability
+directly against the live `pacman`/`libalpm` database, so it never
+converts to solv format at all and isn't exposed to this issue. Same
+pass/fail semantics as before (non-empty output = failure = rollback
+trigger) — only the underlying tool changed.
 
 ---
 
