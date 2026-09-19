@@ -13,7 +13,7 @@ mount --mkdir /dev/sda1 /mnt/boot
 swapon /dev/sda2
 
 # Update Mirrors and Pacstrap base and other packages
-pacman -Sy
+pacman -Syu
 pacman -S reflector
 reflector
 pacstrap -K /mnt base linux linux-firmware linux-headers curl wget git amd-ucode intel-ucode nano vim btrfs-progs os-prober dosfstools
@@ -26,7 +26,7 @@ arch-chroot -S /mnt
 
 # Install extra utilities
 pacman -Syyu
-pacman -S linux-lts linux-lts-headers wireless-regdb alsa-firmware sof-firmware exfatprogs e2fsprogs jfsutils mtd-utils nilfs-utils ntfs-3g udftools xfsprogs bcachefs-tools apfsprogs fsck fdisk cfdisk gdisk udev ndiswrapper overlayfs squashfs networkmanager iwd modemmanager ppp flatpak
+pacman -S linux-lts linux-lts-headers wireless-regdb alsa-firmware sof-firmware exfatprogs e2fsprogs jfsutils mtd-utils nilfs-utils ntfs-3g udftools xfsprogs bcachefs-tools apfsprogs fsck fdisk cfdisk gdisk udev ndiswrapper overlayfs squashfs networkmanager iwd modemmanager ppp flatpak reflector
 
 # Set Locale and Locale.conf
 locale-gen
@@ -47,7 +47,7 @@ read -p "Enter desired root password: " rootpass
 echo -e "$rootpass\$rootpass" | passwd
 
 # Install bootloader and customize entries
-pacman -Sy
+pacman -Syu
 pacman -S grub grub-btrfs
 if [ -d /sys/firmware/efi ]; then
 	echo "BIOS"
