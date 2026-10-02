@@ -28,7 +28,7 @@ reflector
 pacstrap -K /mnt base linux-lts linux-firmware linux-lts-headers curl wget git amd-ucode intel-ucode nano vim btrfs-progs os-prober dosfstools
 
 # Gen FSTAB
-genfstab -U /mnt >> /mnt/etc/fstab
+genfstab -U /mnt | tee /mnt/etc/fstab
 
 # Stage part 2 inside the new system and chroot in.
 # Both files are pulled via git on the archiso, so part 2 is copied over
