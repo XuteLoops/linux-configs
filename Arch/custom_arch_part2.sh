@@ -1,11 +1,12 @@
 #!/bin/bash
+set -euo pipefail
 
 ### Part 2 - runs INSIDE the new system via arch-chroot.
 ### Staged by part 1 (custom_arch.sh) to /root/custom_arch_part2.sh
 
 # Install extra utilities
 pacman -Syyu
-pacman -S zsh xdg-user-dirs wireless-regdb alsa-firmware sof-firmware exfatprogs e2fsprogs jfsutils mtd-utils nilfs-utils ntfs-3g udftools xfsprogs bcachefs-tools apfsprogs fsck fdisk cfdisk gdisk udev ndiswrapper overlayfs squashfs networkmanager iwd modemmanager ppp flatpak reflector fwupd pipewire wireplumber network-manager-applet pkgstats cpupower power-profiles-daemon scx-scheds
+pacman -S zsh xdg-user-dirs wireless-regdb alsa-firmware sof-firmware exfatprogs e2fsprogs jfsutils mtd-utils nilfs-utils ntfs-3g udftools xfsprogs bcachefs-tools apfsprogs fsck fdisk cfdisk gdisk udev ndiswrapper overlayfs squashfs networkmanager iwd modemmanager ppp flatpak reflector fwupd pipewire pipewire-jack wireplumber network-manager-applet pkgstats cpupower power-profiles-daemon scx-scheds
 
 # Set Locale and Locale.conf
 locale-gen
@@ -19,8 +20,8 @@ read -p "Enter the desired hostname: " hostname
 echo "$hostname" > /etc/hostname
 
 # Update firmware & Regenerate initramfs
-fwupdmgr refresh
-fwupdmgr update
+fwupdmgr refresh || true
+fwupdmgr update || true
 mkinitcpio -P
 
 # Set root password
@@ -31,6 +32,7 @@ unset rootpass
 # Install bootloader and customize entries
 pacman -Syu
 pacman -S grub grub-btrfs efibootmgr
+DISK="$(cat /root/.install-disk 2>/dev/null || echo /dev/sda)"
 if [ -d /sys/firmware/efi ]; then
 	echo "UEFI"
 	FW_SIZE=$(cat /sys/firmware/efi/fw_platform_size 2>/dev/null || echo 64)
@@ -41,7 +43,7 @@ if [ -d /sys/firmware/efi ]; then
 	fi
 else
 	echo "BIOS"
-	grub-install --target=i386-pc /dev/sda
+	grub-install --target=i386-pc "$DISK"
 fi
 lsblk --noheadings --raw -o NAME,MOUNTPOINT | awk '$1~/[[:digit:]]/ && $2 == ""' | while read name mountpoint; do
     udisksctl mount -b /dev/$name
@@ -142,33 +144,72 @@ cat > /etc/NetworkManager/conf.d/wifi_backend.conf << 'EOF'
 wifi.backend=iwd
 EOF
 
-systemctl enable --now NetworkManager
+systemctl enable NetworkManager
+# Fallback network (no NM / recovery): networkd does DHCP once a .network file exists,
+# resolved provides DNS. Harmless alongside NM when no .network file is present.
+systemctl enable systemd-networkd
+systemctl enable systemd-resolved
+ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 
 # Install and Configure Xorg, drivers, and input along with Wayland
-pacman -S xorg xf86-input-libinput xf86-input-synaptics xorg-fonts xorg-apps wayland xwayland-satellite
+pacman -S mesa xorg xf86-input-libinput xf86-input-synaptics xorg-fonts xorg-apps wayland xwayland-satellite
 
 mkdir -p /etc/X11/xorg.conf.d
 
 # ==========================================
 # 1. GPU Detection & Driver Configuration
+# NOTE: match on PCI vendor IDs (lspci -nn), NOT on names.
+# The old `grep -iq "ATI"` matched "compATIble controller" on EVERY card.
 # ==========================================
-GPU_INFO=$(lspci -vnn | grep -E -i "vga|3d|display")
+GPU_IDS=$(lspci -nn | grep -Ei 'vga|3d|display')
 
-if echo "$GPU_INFO" | grep -iq "ATI"; then
-    echo "--> Detected ATI legacy GPU. Installing xf86-video-ati..."
-    pacman -S --noconfirm xf86-video-ati
+if echo "$GPU_IDS" | grep -Eq '\[80ee:'; then
+    echo "--> Detected VirtualBox GPU. Installing guest utils..."
+    pacman -S --noconfirm --needed virtualbox-guest-utils
+    systemctl enable vboxservice
     cat > /etc/X11/xorg.conf.d/20-gpudriver.conf << 'EOF'
 Section "Device"
-    Identifier "ATI Graphics"
-    Driver     "ati"
-    Option     "TearFree" "on"
-    Option     "DRI" "3"
+    Identifier "VirtualBox Graphics"
+    Driver     "modesetting"
 EndSection
 EOF
 
-elif echo "$GPU_INFO" | grep -iq "Advanced Micro Devices\|AMD"; then
-    echo "--> Detected modern AMD GPU. Installing xf86-video-amdgpu..."
-    pacman -S --noconfirm xf86-video-amdgpu
+elif echo "$GPU_IDS" | grep -Eq '\[15ad:'; then
+    echo "--> Detected VMware GPU. Using modesetting (xf86-video-vmware was removed from Arch repos)..."
+    pacman -S --noconfirm --needed mesa open-vm-tools
+    systemctl enable vmtoolsd
+    cat > /etc/X11/xorg.conf.d/20-gpudriver.conf << 'EOF'
+Section "Device"
+    Identifier "VMware Graphics"
+    Driver     "modesetting"
+EndSection
+EOF
+
+elif echo "$GPU_IDS" | grep -Eq '\[1af4:|\[1013:|\[1234:'; then
+    echo "--> Detected QEMU/KVM GPU. Installing guest agent..."
+    pacman -S --noconfirm --needed mesa qemu-guest-agent
+    systemctl enable qemu-guest-agent
+    cat > /etc/X11/xorg.conf.d/20-gpudriver.conf << 'EOF'
+Section "Device"
+    Identifier "QEMU Graphics"
+    Driver     "modesetting"
+EndSection
+EOF
+
+elif echo "$GPU_IDS" | grep -Eq '\[10de:'; then
+    echo "--> Detected NVIDIA GPU. Installing proprietary drivers (lts kernel)..."
+    pacman -S --noconfirm --needed nvidia-lts nvidia-utils
+    cat > /etc/X11/xorg.conf.d/20-gpudriver.conf << 'EOF'
+Section "Screen"
+    Identifier "NVIDIA Screen"
+    Option     "ForceCompositionPipeline" "On"
+    Option     "ForceFullCompositionPipeline" "On"
+EndSection
+EOF
+
+elif echo "$GPU_IDS" | grep -Eq '\[1002:'; then
+    echo "--> Detected AMD GPU. Installing amdgpu stack..."
+    pacman -S --noconfirm --needed mesa vulkan-radeon xf86-video-amdgpu
     cat > /etc/X11/xorg.conf.d/20-gpudriver.conf << 'EOF'
 Section "Device"
     Identifier "AMD Graphics"
@@ -179,33 +220,14 @@ Section "Device"
 EndSection
 EOF
 
-elif echo "$GPU_INFO" | grep -iq "NVIDIA"; then
-    echo "--> Detected NVIDIA GPU. Installing proprietary drivers..."
-    pacman -S --noconfirm nvidia-lts nvidia-utils
-    cat > /etc/X11/xorg.conf.d/20-gpudriver.conf << 'EOF'
-Section "Screen"
-    Identifier "NVIDIA Screen"
-    Option     "ForceCompositionPipeline" "On"
-    Option     "ForceFullCompositionPipeline" "On"
-EndSection
-EOF
-
-elif echo "$GPU_INFO" | grep -iq "Intel"; then
+elif echo "$GPU_IDS" | grep -Eq '\[8086:'; then
     echo "--> Detected Intel GPU. Configuring modesetting driver..."
+    pacman -S --noconfirm --needed mesa vulkan-intel
     cat > /etc/X11/xorg.conf.d/20-gpudriver.conf << 'EOF'
 Section "Device"
     Identifier "Intel Graphics"
     Driver     "modesetting"
     Option     "AccelMethod" "glamor"
-EndSection
-EOF
-
-elif echo "$GPU_INFO" | grep -iq "VMware\|VirtualBox\|QEMU"; then
-    echo "--> Detected Virtual Machine display driver. Using fallback modesetting..."
-    cat > /etc/X11/xorg.conf.d/20-gpudriver.conf << 'EOF'
-Section "Device"
-    Identifier "Virtual Display"
-    Driver     "modesetting"
 EndSection
 EOF
 
@@ -352,7 +374,7 @@ sudo visudo -c   #checks to ensure the sudoers file is valid/has no syntax error
 
 # Install and configure 'ly' display manager
 pacman -S ly brightnessctl
-systemctl enable --now ly@tty1.service
+systemctl enable ly@tty1.service
 systemctl disable getty@tty1.service
 
 echo "--> Configuring consolefont before kms in /etc/mkinitcpio.conf..."
@@ -414,12 +436,12 @@ pacman -S adwaita-fonts powerline-fonts awesome-terminal-fonts adobe-source-code
 pacman -S $(pacman -Slq | grep '^noto-fonts') && pacman -S $(pacman -Slq | grep '^otf-') && pacman -S $(pacman -Slq | grep '^ttf-') && pacman -S $(pacman -Slq | grep '^woff2-')
 
 # Optimize CPU Frequency Scaling
-systemctl enable --now power-profiles-daemon.service
+systemctl enable power-profiles-daemon.service
 
 # Unmute alsa kernel driver
-amixer sset Master unmute
-amixer sset Speaker unmute
-amixer sset Headphone unmute
+amixer sset Master unmute || true
+amixer sset Speaker unmute || true
+amixer sset Headphone unmute || true
 
 # Set systemd to enable BSOD instead of console text
-systemctl enable --now systemd-bsod.service
+systemctl enable systemd-bsod.service
